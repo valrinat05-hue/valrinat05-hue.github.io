@@ -1,0 +1,1 @@
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS color_adjustments jsonb DEFAULT '{"brightness":50,"contrast":50,"saturation":50,"temperature":50,"exposure":50}'::jsonb;
