@@ -5,6 +5,7 @@ import type { MergeInput } from "@/lib/videoMerge";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/localDb";
+import { saveVideoBlob, getVideoBlob, deleteVideoBlob, isIndexedDBKey } from "@/lib/videoDB";
 
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY as string;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -264,64 +265,75 @@ const Editor = () => {
     });
   }, [currentMergeSignature, mergedVideoUrl, persistProjectInstructions, projectId, savedMergeSignature]);
 
-  // Load project, scenes, and videos from localStorage
+  // Load project, scenes, and videos from localStorage + IndexedDB
   useEffect(() => {
     if (!projectId) return;
 
-    const proj = db.projects.getById(projectId);
-    if (!proj) {
-      toast.error("פרויקט לא נמצא");
-      navigate("/");
-      return;
-    }
+    const load = async () => {
+      const proj = db.projects.getById(projectId);
+      if (!proj) {
+        toast.error("פרויקט לא נמצא");
+        navigate("/");
+        return;
+      }
 
-    setProject(proj as unknown as ProjectData);
-    const ca = proj.color_adjustments;
-    if (ca && typeof ca === "object") setColorAdjustments(ca as ColorAdjustments);
-    const instructions = (proj.edit_instructions && typeof proj.edit_instructions === "object"
-      ? proj.edit_instructions
-      : {}) as ProjectEditInstructions;
-    setProjectInstructions(instructions);
-    projectInstructionsRef.current = instructions;
-    setSavedMergeSignature(typeof instructions.merge_signature === "string" ? instructions.merge_signature : null);
-    setSelectedTrack(typeof instructions.soundtrack_track_id === "number" ? instructions.soundtrack_track_id : null);
-    if (Array.isArray((instructions as EditPlan).scene_plan)) {
-      setEditPlan(instructions as EditPlan);
-    }
+      setProject(proj as unknown as ProjectData);
+      const ca = proj.color_adjustments;
+      if (ca && typeof ca === "object") setColorAdjustments(ca as ColorAdjustments);
+      const instructions = (proj.edit_instructions && typeof proj.edit_instructions === "object"
+        ? proj.edit_instructions
+        : {}) as ProjectEditInstructions;
+      setProjectInstructions(instructions);
+      projectInstructionsRef.current = instructions;
+      setSavedMergeSignature(typeof instructions.merge_signature === "string" ? instructions.merge_signature : null);
+      setSelectedTrack(typeof instructions.soundtrack_track_id === "number" ? instructions.soundtrack_track_id : null);
+      if (Array.isArray((instructions as EditPlan).scene_plan)) {
+        setEditPlan(instructions as EditPlan);
+      }
 
-    const scenesData = db.scenes.getByProject(projectId);
-    setScenes(scenesData);
+      const scenesData = db.scenes.getByProject(projectId);
+      setScenes(scenesData);
 
-    const approved = new Set<number>();
-    const saved = new Set<number>();
-    scenesData.forEach((s, i) => {
-      if (s.status === "approved" || s.status === "saved") approved.add(i);
-      if (s.status === "saved") saved.add(i);
-    });
-    setApprovedScenes(approved);
-    setSavedScenes(saved);
+      const approved = new Set<number>();
+      const saved = new Set<number>();
+      scenesData.forEach((s, i) => {
+        if (s.status === "approved" || s.status === "saved") approved.add(i);
+        if (s.status === "saved") saved.add(i);
+      });
+      setApprovedScenes(approved);
+      setSavedScenes(saved);
 
-    // Load video metadata — blob: URLs stored in file_url
-    const videos = db.sceneVideos.getByScenes(scenesData.map(s => s.id));
-    if (videos.length > 0) {
-      const videoMap: Record<number, SceneVideo[]> = {};
-      for (const v of videos) {
-        const sceneIndex = scenesData.findIndex(s => s.id === v.scene_id);
-        if (sceneIndex < 0) continue;
-        if (!videoMap[sceneIndex]) videoMap[sceneIndex] = [];
-        // Only add if blob: URL still valid (won't be after page refresh)
-        if (v.file_url.startsWith("blob:")) {
+      // Load video metadata from localStorage, actual blobs from IndexedDB
+      const videos = db.sceneVideos.getByScenes(scenesData.map(s => s.id));
+      if (videos.length > 0) {
+        const videoMap: Record<number, SceneVideo[]> = {};
+        await Promise.all(videos.map(async (v) => {
+          const sceneIndex = scenesData.findIndex(s => s.id === v.scene_id);
+          if (sceneIndex < 0) return;
+          let url: string | null = null;
+          if (isIndexedDBKey(v.file_url)) {
+            url = await getVideoBlob(v.file_url);
+          } else if (v.file_url.startsWith("blob:")) {
+            url = v.file_url;
+          }
+          if (!url) return;
+          if (!videoMap[sceneIndex]) videoMap[sceneIndex] = [];
           videoMap[sceneIndex].push({
             id: v.id,
-            url: v.file_url,
+            url,
             angle: v.angle_label || `זווית ${videoMap[sceneIndex].length + 1}`,
           });
-        }
+        }));
+        Object.keys(videoMap).forEach(k => {
+          videoMap[+k].sort((a, b) => a.angle.localeCompare(b.angle));
+        });
+        setSceneVideos(videoMap);
       }
-      setSceneVideos(videoMap);
-    }
 
-    setStage("scene-list");
+      setStage("scene-list");
+    };
+
+    void load();
   }, [projectId, navigate]);
 
   if (stage === "loading" || !project) {
@@ -357,16 +369,19 @@ const Editor = () => {
           continue;
         }
 
-        const blobUrl = URL.createObjectURL(file);
         const angleLabel = `זווית ${(sceneVideos[sceneIndex]?.length || 0) + i + 1}`;
+        const idbKey = `idb:${sceneId}:${Date.now()}_${i}`;
+
+        await saveVideoBlob(idbKey, file);
 
         const videoRecord = db.sceneVideos.insert({
           scene_id: sceneId,
           file_name: file.name,
-          file_url: blobUrl,
+          file_url: idbKey,
           angle_label: angleLabel,
         });
 
+        const blobUrl = URL.createObjectURL(file);
         setSceneVideos(prev => ({
           ...prev,
           [sceneIndex]: [...(prev[sceneIndex] || []), {
@@ -385,11 +400,16 @@ const Editor = () => {
     }
   };
 
-  const removeVideo = (sceneIndex: number, videoIndex: number) => {
+  const removeVideo = async (sceneIndex: number, videoIndex: number) => {
     const video = sceneVideos[sceneIndex]?.[videoIndex];
     if (!video) return;
 
-    if (video.id) db.sceneVideos.delete(video.id);
+    if (video.id) {
+      const record = db.sceneVideos.getByScene(sceneIndex.toString()).find(v => v.id === video.id)
+        || db.sceneVideos.getByScenes(scenes.map(s => s.id)).find(v => v.id === video.id);
+      if (record && isIndexedDBKey(record.file_url)) await deleteVideoBlob(record.file_url);
+      db.sceneVideos.delete(video.id);
+    }
     if (video.url.startsWith("blob:")) URL.revokeObjectURL(video.url);
 
     setSceneVideos(prev => {
