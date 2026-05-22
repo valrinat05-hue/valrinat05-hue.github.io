@@ -369,8 +369,6 @@ const Editor = () => {
     );
   }
 
-  const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4GB
-
   const handleFileUpload = async (sceneIndex: number, files: FileList | null) => {
     if (!files || !scenes[sceneIndex]) return;
 
@@ -380,11 +378,6 @@ const Editor = () => {
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-
-        if (file.size > MAX_FILE_SIZE) {
-          toast.error(`הקובץ "${file.name}" גדול מדי (מקסימום 4GB)`);
-          continue;
-        }
 
         if (!file.type.startsWith("video/")) {
           toast.error(`הקובץ "${file.name}" אינו קובץ וידאו`);
