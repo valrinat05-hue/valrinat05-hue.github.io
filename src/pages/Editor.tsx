@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { mergeVideos, smartMergeVideos, SmartMergeInput } from "@/lib/videoMerge";
+import { smartMergeVideos, SmartMergeInput } from "@/lib/videoMerge";
 import MultiCamView from "@/components/editor/MultiCamView";
-import type { MergeInput } from "@/lib/videoMerge";
+import TrimEditor from "@/components/editor/TrimEditor";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/localDb";
@@ -94,6 +94,7 @@ type ProjectEditInstructions = Partial<EditPlan> & {
   merge_signature?: string;
   workflow_stage?: PersistedWorkflowStage;
   soundtrack_track_id?: number | null;
+  scene_trims?: Record<number, { start: number; end: number | null }>;
 };
 
 type EditorStage =
@@ -198,7 +199,9 @@ const Editor = () => {
   const mergeInFlightRef = useRef(false);
   const projectInstructionsRef = useRef<ProjectEditInstructions>({});
   const [colorAdjustments, setColorAdjustments] = useState<ColorAdjustments>(defaultAdjustments);
+  const [sceneTrimData, setSceneTrimData] = useState<Record<number, { start: number; end: number | null }>>({});
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trimSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
   const [editPlan, setEditPlan] = useState<EditPlan | null>(null);
   const [isDirecting, setIsDirecting] = useState(false);
@@ -241,6 +244,18 @@ const Editor = () => {
     db.projects.update(projectId, { edit_instructions: nextInstructions });
     return nextInstructions;
   }, [projectId]);
+
+  const handleTrimChange = useCallback((sceneIndex: number, start: number, end: number | null) => {
+    setSceneTrimData(prev => ({ ...prev, [sceneIndex]: { start, end } }));
+    if (trimSaveTimerRef.current) clearTimeout(trimSaveTimerRef.current);
+    trimSaveTimerRef.current = setTimeout(() => {
+      if (!projectId) return;
+      void persistProjectInstructions(prev => ({
+        ...prev,
+        scene_trims: { ...((prev as any).scene_trims || {}), [sceneIndex]: { start, end } },
+      }));
+    }, 800);
+  }, [projectId, persistProjectInstructions]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -287,6 +302,13 @@ const Editor = () => {
       projectInstructionsRef.current = instructions;
       setSavedMergeSignature(typeof instructions.merge_signature === "string" ? instructions.merge_signature : null);
       setSelectedTrack(typeof instructions.soundtrack_track_id === "number" ? instructions.soundtrack_track_id : null);
+      if (instructions.scene_trims && typeof instructions.scene_trims === "object") {
+        const trims: Record<number, { start: number; end: number | null }> = {};
+        for (const [k, v] of Object.entries(instructions.scene_trims)) {
+          trims[Number(k)] = v as { start: number; end: number | null };
+        }
+        setSceneTrimData(trims);
+      }
       if (Array.isArray((instructions as EditPlan).scene_plan)) {
         setEditPlan(instructions as EditPlan);
       }
@@ -580,11 +602,12 @@ const Editor = () => {
             if (found) vid = found;
           }
 
+          const trimOverride = sceneTrimData[sceneIdx];
           smartInputs.push({
             url: vid.url,
             index: sceneIdx,
-            trimStartSec: sp.trim_start_sec ?? sp.suggested_trim?.start_sec ?? 0,
-            trimEndSec: sp.trim_end_sec ?? sp.suggested_trim?.end_sec ?? null,
+            trimStartSec: trimOverride !== undefined ? trimOverride.start : sp.trim_start_sec ?? sp.suggested_trim?.start_sec ?? 0,
+            trimEndSec: trimOverride !== undefined ? trimOverride.end : sp.trim_end_sec ?? sp.suggested_trim?.end_sec ?? null,
             playbackSpeed: sp.playback_speed ?? 1.0,
           });
         }
@@ -597,26 +620,33 @@ const Editor = () => {
 
         const url = await smartMergeVideos(smartInputs, (percent) => {
           setMergeProgress(Math.round(percent));
-        });
+        }, colorAdjustments);
         const persistedUrl = await persistMergedVideo(url);
         setMergedVideoUrl(persistedUrl);
       } else {
-        // Basic merge
-        const inputs: MergeInput[] = [];
+        // Basic merge (no AI plan) — still respects manual trims and color grading
+        const smartBasicInputs: SmartMergeInput[] = [];
         for (let i = 0; i < scenes.length; i++) {
           const vids = sceneVideos[i];
           if (vids && vids.length > 0) {
-            inputs.push({ url: vids[0].url, index: i });
+            const trimOverride = sceneTrimData[i];
+            smartBasicInputs.push({
+              url: vids[0].url,
+              index: i,
+              trimStartSec: trimOverride?.start ?? 0,
+              trimEndSec: trimOverride?.end ?? null,
+              playbackSpeed: 1.0,
+            });
           }
         }
-        if (inputs.length === 0) {
+        if (smartBasicInputs.length === 0) {
           toast.error("אין סרטונים למיזוג");
           setStage("scene-list");
           return;
         }
-        const url = await mergeVideos(inputs, (percent) => {
+        const url = await smartMergeVideos(smartBasicInputs, (percent) => {
           setMergeProgress(Math.round(percent));
-        });
+        }, colorAdjustments);
         const persistedUrl = await persistMergedVideo(url);
         setMergedVideoUrl(persistedUrl);
       }
@@ -1338,6 +1368,18 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                     />
                   </div>
                 )}
+
+                {/* Trim Editor — set in/out points for this scene */}
+                {currentVideo && (
+                  <div className="px-4 py-3 border-t border-border">
+                    <TrimEditor
+                      videoUrl={currentVideo.url}
+                      trimStart={sceneTrimData[activeScene]?.start ?? 0}
+                      trimEnd={sceneTrimData[activeScene]?.end ?? null}
+                      onTrimChange={(start, end) => handleTrimChange(activeScene, start, end)}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-center gap-3 py-3 bg-card border-t border-border flex-wrap">
@@ -1413,7 +1455,7 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                     חזרה
                   </Button>
                   <Check className="h-5 w-5 text-green-400" />
-                  <p className="text-sm font-semibold text-green-400">הסרט ערוך ומוכן! בקש שינויים מה-AI בצ'אט.</p>
+                  <p className="text-sm font-semibold text-green-400">תצוגה מקדימה — כל האפקטים והחיתוכים הוחלו על הווידאו. הורד כדי לשמור.</p>
                 </div>
               </div>
               <div className="flex-1 flex items-center justify-center bg-black/40 p-4">
@@ -1423,7 +1465,6 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                     src={mergedVideoUrl}
                     controls
                     className="max-w-full max-h-full rounded-lg shadow-xl"
-                    style={{ filter: adjustmentsToCssFilter(colorAdjustments) }}
                   />
                 ) : (
                   <div className="text-center text-muted-foreground">
