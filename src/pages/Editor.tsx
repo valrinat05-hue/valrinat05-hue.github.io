@@ -369,7 +369,7 @@ const Editor = () => {
     );
   }
 
-  const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
+  const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4GB
 
   const handleFileUpload = async (sceneIndex: number, files: FileList | null) => {
     if (!files || !scenes[sceneIndex]) return;
@@ -382,7 +382,7 @@ const Editor = () => {
         const file = files[i];
 
         if (file.size > MAX_FILE_SIZE) {
-          toast.error(`הקובץ "${file.name}" גדול מדי (מקסימום 500MB)`);
+          toast.error(`הקובץ "${file.name}" גדול מדי (מקסימום 4GB)`);
           continue;
         }
 
@@ -427,7 +427,8 @@ const Editor = () => {
     if (!video) return;
 
     if (video.id) {
-      const record = db.sceneVideos.getByScene(sceneIndex.toString()).find(v => v.id === video.id)
+      const sceneId = scenes[sceneIndex]?.id;
+      const record = (sceneId ? db.sceneVideos.getByScene(sceneId) : []).find(v => v.id === video.id)
         || db.sceneVideos.getByScenes(scenes.map(s => s.id)).find(v => v.id === video.id);
       if (record && isIndexedDBKey(record.file_url)) await deleteVideoBlob(record.file_url);
       db.sceneVideos.delete(video.id);
@@ -1369,11 +1370,11 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                   </div>
                 )}
 
-                {/* Trim Editor — set in/out points for this scene */}
+                {/* Trim Editor — controls attach to the main video above, no second player */}
                 {currentVideo && (
                   <div className="px-4 py-3 border-t border-border">
                     <TrimEditor
-                      videoUrl={currentVideo.url}
+                      videoRef={videoRef}
                       trimStart={sceneTrimData[activeScene]?.start ?? 0}
                       trimEnd={sceneTrimData[activeScene]?.end ?? null}
                       onTrimChange={(start, end) => handleTrimChange(activeScene, start, end)}
