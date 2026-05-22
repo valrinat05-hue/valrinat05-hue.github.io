@@ -387,7 +387,8 @@ const Editor = () => {
         const angleLabel = `זווית ${(sceneVideos[sceneIndex]?.length || 0) + i + 1}`;
         const idbKey = `idb:${sceneId}:${Date.now()}_${i}`;
 
-        await saveVideoBlob(idbKey, file);
+        // Show the video immediately — blob URL gives instant access to the local file
+        const blobUrl = URL.createObjectURL(file);
 
         const videoRecord = db.sceneVideos.insert({
           scene_id: sceneId,
@@ -396,7 +397,6 @@ const Editor = () => {
           angle_label: angleLabel,
         });
 
-        const blobUrl = URL.createObjectURL(file);
         setSceneVideos(prev => ({
           ...prev,
           [sceneIndex]: [...(prev[sceneIndex] || []), {
@@ -405,9 +405,16 @@ const Editor = () => {
             angle: angleLabel,
           }],
         }));
+
+        // Save to IndexedDB in the background — large files can take minutes to write,
+        // the user can already start editing while the save happens.
+        saveVideoBlob(idbKey, file).catch((err) => {
+          console.error("IndexedDB save failed:", err);
+          toast.warning(`"${file.name}" — טעון לצפייה אך לא יישמר לאחר רענון (שטח דיסק מלא?)`);
+        });
       }
 
-      toast.success("סרטונים הועלו בהצלחה!");
+      toast.success("סרטונים הועלו! ניתן לערוך מיד.");
     } catch (error: any) {
       toast.error(error.message || "שגיאה בהעלאת הסרטון");
     } finally {
@@ -1320,6 +1327,8 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                       src={currentVideo.url}
                       className="max-h-full max-w-full object-contain"
                       style={{ filter: adjustmentsToCssFilter(colorAdjustments) }}
+                      preload="metadata"
+                      playsInline
                       onEnded={() => setIsPlaying(false)}
                       onPlay={() => setIsPlaying(true)}
                       onPause={() => setIsPlaying(false)}
