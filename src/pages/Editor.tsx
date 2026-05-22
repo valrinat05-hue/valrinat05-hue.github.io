@@ -7,9 +7,40 @@ import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/localDb";
 import { saveVideoBlob, getVideoBlob, deleteVideoBlob, isIndexedDBKey } from "@/lib/videoDB";
 
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY as string;
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string;
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const CLAUDE_MODEL = "claude-sonnet-4-6";
+
+/** Call Claude and return the raw text response */
+async function callClaude(
+  systemPrompt: string,
+  messages: { role: "user" | "assistant"; content: string }[],
+  maxTokens = 2000,
+): Promise<string> {
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system: systemPrompt, messages }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error?.message || `Claude error ${res.status}`);
+  return data?.content?.[0]?.text ?? "";
+}
+
+/** Extract JSON from Claude's response — handles optional markdown code fences */
+function parseJsonResponse(text: string): any {
+  try { return JSON.parse(text); } catch { /* fall through */ }
+  const stripped = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+  try { return JSON.parse(stripped); } catch { /* fall through */ }
+  const match = text.match(/\{[\s\S]*\}/);
+  if (match) return JSON.parse(match[0]);
+  throw new Error("No valid JSON in Claude response");
+}
 import Header from "@/components/Header";
 import ManualEditingPanel, { ColorAdjustments, defaultAdjustments, adjustmentsToCssFilter } from "@/components/editor/ManualEditingPanel";
 import AIChatPanel from "@/components/editor/AIChatPanel";
@@ -406,12 +437,15 @@ const Editor = () => {
           }],
         }));
 
-        // Save to IndexedDB in the background — large files can take minutes to write,
-        // the user can already start editing while the save happens.
-        saveVideoBlob(idbKey, file).catch((err) => {
-          console.error("IndexedDB save failed:", err);
-          toast.warning(`"${file.name}" — טעון לצפייה אך לא יישמר לאחר רענון (שטח דיסק מלא?)`);
-        });
+        // Save to IndexedDB in the background — large files can take minutes.
+        // The user can edit immediately; this toast shows real-time progress.
+        const savingToastId = toast.loading(`שומר "${file.name}" ברקע...`);
+        saveVideoBlob(idbKey, file)
+          .then(() => toast.success(`✅ "${file.name}" נשמר!`, { id: savingToastId }))
+          .catch((err) => {
+            console.error("IndexedDB save failed:", err);
+            toast.warning(`⚠️ "${file.name}" — לא נשמר לאחר רענון (אין מספיק שטח)`, { id: savingToastId });
+          });
       }
 
       toast.success("סרטונים הועלו! ניתן לערוך מיד.");
@@ -723,31 +757,10 @@ Return ONLY a JSON object with this structure (no markdown):
 
       const userMsg = `Project: "${proj?.name || "untitled"}", genre: "${proj?.genre || "general"}", style: ${styleDesc[editingStyle] || editingStyle}, ${sceneCount} scenes. Create an editing plan.`;
 
-      const response = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: GROQ_MODEL,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMsg },
-          ],
-          response_format: { type: "json_object" },
-          max_tokens: 2000,
-          temperature: 0.7,
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(data?.error?.message || "AI Director failed");
-
+      const rawText = await callClaude(systemPrompt, [{ role: "user", content: userMsg }], 2000);
       let plan: any = null;
       try {
-        const content = data?.choices?.[0]?.message?.content;
-        plan = typeof content === "string" ? JSON.parse(content) : content;
+        plan = parseJsonResponse(rawText);
       } catch {
         throw new Error("Failed to parse AI response");
       }
@@ -828,27 +841,13 @@ Operations can be:
 
 Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed, return empty operations array.`;
 
-      const res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: GROQ_MODEL,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history,
-            { role: "user", content: prompt },
-          ],
-          response_format: { type: "json_object" },
-          max_tokens: 1000,
-          temperature: 0.7,
-        }),
-      });
-
-      if (!res.ok) {
-        if (res.status === 429) toast.error("יותר מדי בקשות, נסה שוב בעוד רגע");
+      let opsPayload: { reply?: string; summary?: string; operations?: any[] } | null = null;
+      try {
+        const rawText = await callClaude(systemPrompt, [...history, { role: "user", content: prompt }], 1000);
+        opsPayload = parseJsonResponse(rawText);
+      } catch (apiErr: any) {
+        const status = apiErr?.message?.includes("429") ? 429 : 0;
+        if (status === 429) toast.error("יותר מדי בקשות, נסה שוב בעוד רגע");
         else toast.error("שגיאה בקריאה ל-AI Editor");
         setChatMessages((prev) => {
           const next = [...prev];
@@ -856,15 +855,6 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
           return next;
         });
         return;
-      }
-
-      const data = await res.json().catch(() => null);
-      let opsPayload: { reply?: string; summary?: string; operations?: any[] } | null = null;
-      try {
-        const content = data?.choices?.[0]?.message?.content;
-        opsPayload = typeof content === "string" ? JSON.parse(content) : content;
-      } catch {
-        opsPayload = { reply: "בוצע.", summary: "עריכה", operations: [] };
       }
 
       const operations = (opsPayload?.operations || []) as import("@/lib/aiEditOps").EditOperation[];

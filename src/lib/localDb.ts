@@ -1,9 +1,21 @@
 // localStorage-based database replacing Supabase
 
-const LOCAL_USER_ID = "local-user-001";
+const USER_ID_KEY = "studio_user_id";
+
+// Generate a stable unique ID per browser/device on first visit
+const CURRENT_USER_ID: string = (() => {
+  let id = localStorage.getItem(USER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID
+      ? crypto.randomUUID()
+      : `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(USER_ID_KEY, id);
+  }
+  return id;
+})();
 
 export const LOCAL_USER = {
-  id: LOCAL_USER_ID,
+  id: CURRENT_USER_ID,
   email: "local@studio.app",
   user_metadata: { full_name: "Studio User" },
 };
@@ -24,7 +36,11 @@ function getAll<T>(table: string): T[] {
 }
 
 function saveAll<T>(table: string, rows: T[]) {
-  localStorage.setItem(getKey(table), JSON.stringify(rows));
+  try {
+    localStorage.setItem(getKey(table), JSON.stringify(rows));
+  } catch {
+    // localStorage full — silently ignore metadata writes
+  }
 }
 
 function uuid() {
@@ -76,11 +92,11 @@ export interface SceneVideoRow {
 export const db = {
   projects: {
     getAll(): ProjectRow[] {
-      return getAll<ProjectRow>("projects").filter(p => p.user_id === LOCAL_USER_ID);
+      return getAll<ProjectRow>("projects").filter(p => p.user_id === CURRENT_USER_ID);
     },
 
     getById(id: string): ProjectRow | null {
-      return getAll<ProjectRow>("projects").find(p => p.id === id && p.user_id === LOCAL_USER_ID) || null;
+      return getAll<ProjectRow>("projects").find(p => p.id === id && p.user_id === CURRENT_USER_ID) || null;
     },
 
     insert(data: Omit<ProjectRow, "id" | "created_at" | "updated_at" | "edit_instructions" | "color_adjustments">): ProjectRow {
@@ -176,7 +192,7 @@ export const db = {
       saveAll("scene_videos", rows);
     },
 
-    deleteByProject(projectId: string, sceneIds: string[]) {
+    deleteByProject(_projectId: string, sceneIds: string[]) {
       const set = new Set(sceneIds);
       const rows = getAll<SceneVideoRow>("scene_videos").filter(v => !set.has(v.scene_id));
       saveAll("scene_videos", rows);
