@@ -414,61 +414,87 @@ const Editor = () => {
     );
   }
 
-  const handleFileUpload = async (sceneIndex: number, files: FileList | null) => {
-    if (!files || !scenes[sceneIndex]) return;
+  const VIDEO_EXTENSIONS = /\.(mp4|mov|avi|mkv|mts|m2ts|mxf|webm|wmv|flv|3gp)$/i;
+  const LARGE_FILE_THRESHOLD = 500 * 1024 * 1024; // 500 MB
 
+  const addVideoFiles = async (sceneIndex: number, files: File[]) => {
+    if (!scenes[sceneIndex] || files.length === 0) return;
     setUploadingScene(sceneIndex);
     const sceneId = scenes[sceneIndex].id;
-
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-
-        if (!file.type.startsWith("video/")) {
+        if (!file.type.startsWith("video/") && !VIDEO_EXTENSIONS.test(file.name)) {
           toast.error(`הקובץ "${file.name}" אינו קובץ וידאו`);
           continue;
         }
-
         const angleLabel = `זווית ${(sceneVideos[sceneIndex]?.length || 0) + i + 1}`;
-        const idbKey = `idb:${sceneId}:${Date.now()}_${i}`;
-
-        // Show the video immediately — blob URL gives instant access to the local file
         const blobUrl = URL.createObjectURL(file);
-
+        const isLarge = file.size > LARGE_FILE_THRESHOLD;
+        const idbKey = `idb:${sceneId}:${Date.now()}_${i}`;
         const videoRecord = db.sceneVideos.insert({
           scene_id: sceneId,
           file_name: file.name,
-          file_url: idbKey,
+          file_url: isLarge ? `blob-tmp:${file.name}` : idbKey,
           angle_label: angleLabel,
         });
-
         setSceneVideos(prev => ({
           ...prev,
-          [sceneIndex]: [...(prev[sceneIndex] || []), {
-            id: videoRecord.id,
-            url: blobUrl,
-            angle: angleLabel,
-          }],
+          [sceneIndex]: [...(prev[sceneIndex] || []), { id: videoRecord.id, url: blobUrl, angle: angleLabel }],
         }));
-
-        // Save to IndexedDB in the background — large files can take minutes.
-        // The user can edit immediately; this toast shows real-time progress.
-        const savingToastId = toast.loading(`שומר "${file.name}" ברקע...`);
-        saveVideoBlob(idbKey, file)
-          .then(() => toast.success(`✅ "${file.name}" נשמר!`, { id: savingToastId }))
-          .catch((err) => {
-            console.error("IndexedDB save failed:", err);
-            toast.warning(`⚠️ "${file.name}" — לא נשמר לאחר רענון (אין מספיק שטח)`, { id: savingToastId });
-          });
+        if (isLarge) {
+          toast.info(`📁 "${file.name}" — קובץ גדול, זמין לעריכה כעת. לא ישמר לאחר רענון.`);
+        } else {
+          const savingToastId = toast.loading(`שומר "${file.name}"...`);
+          saveVideoBlob(idbKey, file)
+            .then(() => toast.success(`✅ "${file.name}" נשמר!`, { id: savingToastId }))
+            .catch(() => toast.warning(`⚠️ "${file.name}" — לא נשמר לאחר רענון`, { id: savingToastId }));
+        }
       }
-
-      toast.success("סרטונים הועלו! ניתן לערוך מיד.");
+      toast.success(`${files.length} סרטון${files.length > 1 ? "ים" : ""} נטענ${files.length > 1 ? "ו" : ""} — ניתן לערוך מיד!`);
     } catch (error: any) {
-      toast.error(error.message || "שגיאה בהעלאת הסרטון");
+      toast.error(error.message || "שגיאה בטעינת הסרטון");
     } finally {
       setUploadingScene(null);
     }
   };
+
+  const handleFileUpload = async (sceneIndex: number, files: FileList | null) => {
+    if (!files) return;
+    await addVideoFiles(sceneIndex, Array.from(files));
+  };
+
+  const pickFilesFromDisk = async (sceneIndex: number) => {
+    try {
+      const handles = await (window as any).showOpenFilePicker({
+        multiple: true,
+        types: [{ description: "קבצי וידאו", accept: { "video/*": [".mp4", ".mov", ".avi", ".mkv", ".mts", ".m2ts", ".mxf", ".webm"] } }],
+      });
+      const files: File[] = await Promise.all(handles.map((h: any) => h.getFile()));
+      await addVideoFiles(sceneIndex, files);
+    } catch (err: any) {
+      if (err?.name !== "AbortError") toast.error("שגיאה בפתיחת הקבצים");
+    }
+  };
+
+  const pickFolderFromDisk = async (sceneIndex: number) => {
+    try {
+      const dirHandle = await (window as any).showDirectoryPicker({ mode: "read" });
+      const files: File[] = [];
+      for await (const [name, handle] of (dirHandle as any).entries()) {
+        if (handle.kind === "file" && (VIDEO_EXTENSIONS.test(name))) {
+          files.push(await (handle as any).getFile());
+        }
+      }
+      if (files.length === 0) { toast.error("לא נמצאו קבצי וידאו בתיקיה"); return; }
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      await addVideoFiles(sceneIndex, files);
+    } catch (err: any) {
+      if (err?.name !== "AbortError") toast.error("שגיאה בפתיחת התיקיה");
+    }
+  };
+
+  const hasFSA = typeof (window as any).showOpenFilePicker === "function";
 
   const removeVideo = async (sceneIndex: number, videoIndex: number) => {
     const video = sceneVideos[sceneIndex]?.[videoIndex];
@@ -1062,16 +1088,41 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                           className="hidden"
                           onChange={e => handleFileUpload(scene.index, e.target.files)}
                         />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={(e) => { e.stopPropagation(); fileInputRefs.current[scene.index]?.click(); }}
-                          className="gap-1 text-xs"
-                          disabled={isUploading}
-                        >
-                          {isUploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
-                          {isUploading ? "מעלה..." : "העלה סרטונים"}
-                        </Button>
+                        {isUploading ? (
+                          <Button variant="outline" size="sm" disabled className="gap-1 text-xs w-full">
+                            <Loader2 className="h-3 w-3 animate-spin" /> טוען...
+                          </Button>
+                        ) : hasFSA ? (
+                          <div className="flex gap-1 w-full">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => { e.stopPropagation(); pickFilesFromDisk(scene.index); }}
+                              className="gap-1 text-xs flex-1"
+                              title="בחר קבצים מהכונן"
+                            >
+                              <Upload className="h-3 w-3" /> קבצים
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => { e.stopPropagation(); pickFolderFromDisk(scene.index); }}
+                              className="gap-1 text-xs flex-1"
+                              title="בחר תיקיה שלמה (כל הזוויות)"
+                            >
+                              <FolderOpen className="h-3 w-3" /> תיקיה
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); fileInputRefs.current[scene.index]?.click(); }}
+                            className="gap-1 text-xs w-full"
+                          >
+                            <Upload className="h-3 w-3" /> העלה סרטונים
+                          </Button>
+                        )}
 
                         {scene.hasVideos && (
                           <Button
