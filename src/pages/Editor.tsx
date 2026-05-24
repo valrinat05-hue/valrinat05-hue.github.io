@@ -45,6 +45,8 @@ import Header from "@/components/Header";
 import ManualEditingPanel, { ColorAdjustments, defaultAdjustments, adjustmentsToCssFilter } from "@/components/editor/ManualEditingPanel";
 import AIChatPanel from "@/components/editor/AIChatPanel";
 import EditingStylePicker, { EditingStyle } from "@/components/editor/EditingStylePicker";
+import TransitionsPanel, { TransitionType } from "@/components/editor/TransitionsPanel";
+import PacingPanel from "@/components/editor/PacingPanel";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -240,6 +242,9 @@ const Editor = () => {
   const [projectInstructions, setProjectInstructions] = useState<ProjectEditInstructions>({});
   const [currentMergeSignature, setCurrentMergeSignature] = useState<string | null>(null);
   const [savedMergeSignature, setSavedMergeSignature] = useState<string | null>(null);
+  const [sceneTransitions, setSceneTransitions] = useState<Record<number, TransitionType>>({});
+  const [sceneDurations, setSceneDurations] = useState<Record<number, number>>({});
+  const [rightTab, setRightTab] = useState<"ai" | "transitions" | "pacing">("ai");
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -1322,6 +1327,12 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                       onEnded={() => setIsPlaying(false)}
                       onPlay={() => setIsPlaying(true)}
                       onPause={() => setIsPlaying(false)}
+                      onLoadedMetadata={(e) => {
+                        const dur = (e.target as HTMLVideoElement).duration;
+                        if (dur && isFinite(dur)) {
+                          setSceneDurations(prev => ({ ...prev, [activeScene]: dur }));
+                        }
+                      }}
                     />
                   ) : (
                     <div className="text-muted-foreground text-center">
@@ -1746,32 +1757,86 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
           )}
         </div>
 
-        {/* RIGHT — AI Chat Panel (all stages except scene-list and loading) */}
+        {/* RIGHT — tabbed panel (all stages except scene-list and loading) */}
         {stage !== "scene-list" && (
-          <AIChatPanel
-            messages={chatMessages}
-            onSendMessage={handleSendMessage}
-            onQuickAction={handleQuickAction}
-            stage={stage}
-            activeScene={activeScene}
-            videoCount={currentVideos.length}
-            onApplyAICut={() => {
-              setChatMessages(prev => [
-                ...prev,
-                { role: "ai", content: `🎬 זיהיתי ${currentVideos.length} זוויות בסצנה ${activeScene + 1}.\n\nאני ממליץ:\n- **פתיחה** עם ${currentVideos[0]?.angle || "זווית 1"} (שוט רחב)\n- **חיתוך ב-00:15** ל${currentVideos[Math.min(1, currentVideos.length - 1)]?.angle || "זווית 2"} כשהשחקן זז\n${currentVideos.length > 2 ? `- **תקריב ב-00:22** ל${currentVideos[2]?.angle} ללכידת רגש\n` : ""}\nהאם להחיל את החיתוך הזה?`,
-                  actions: [
-                    { label: "החל חיתוך", type: "apply" as const, onAction: () => {
-                      setChatMessages(p => [...p, { role: "ai", content: "✅ חיתוך אוטומטי הוחל! הזוויות מסודרות לפי המלצת ה-AI." }]);
-                      approveScene();
-                    }},
-                    { label: "דחה", type: "reject" as const, onAction: () => {
-                      setChatMessages(p => [...p, { role: "ai", content: "בסדר, לא הוחל. תוכל לבחור ידנית מה-Multi-Cam." }]);
-                    }},
-                  ],
-                },
-              ]);
-            }}
-          />
+          <div className="w-80 shrink-0 border-l border-border flex flex-col bg-card overflow-hidden">
+            {/* Tab bar */}
+            <div className="flex border-b border-border shrink-0">
+              {([ ["ai", "🤖 AI"], ["transitions", "🎞️ מעברים"], ["pacing", "📊 קצב"] ] as const).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  onClick={() => setRightTab(tab)}
+                  className={`flex-1 py-2 text-xs font-semibold transition-colors ${
+                    rightTab === tab
+                      ? "text-primary border-b-2 border-primary bg-primary/5"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <div className="flex-1 overflow-hidden">
+              {rightTab === "ai" && (
+                <AIChatPanel
+                  messages={chatMessages}
+                  onSendMessage={handleSendMessage}
+                  onQuickAction={handleQuickAction}
+                  stage={stage}
+                  activeScene={activeScene}
+                  videoCount={currentVideos.length}
+                  onApplyAICut={() => {
+                    setChatMessages(prev => [
+                      ...prev,
+                      { role: "ai", content: `🎬 זיהיתי ${currentVideos.length} זוויות בסצנה ${activeScene + 1}.\n\nאני ממליץ:\n- **פתיחה** עם ${currentVideos[0]?.angle || "זווית 1"} (שוט רחב)\n- **חיתוך ב-00:15** ל${currentVideos[Math.min(1, currentVideos.length - 1)]?.angle || "זווית 2"} כשהשחקן זז\n${currentVideos.length > 2 ? `- **תקריב ב-00:22** ל${currentVideos[2]?.angle} ללכידת רגש\n` : ""}\nהאם להחיל את החיתוך הזה?`,
+                        actions: [
+                          { label: "החל חיתוך", type: "apply" as const, onAction: () => {
+                            setChatMessages(p => [...p, { role: "ai", content: "✅ חיתוך אוטומטי הוחל! הזוויות מסודרות לפי המלצת ה-AI." }]);
+                            approveScene();
+                          }},
+                          { label: "דחה", type: "reject" as const, onAction: () => {
+                            setChatMessages(p => [...p, { role: "ai", content: "בסדר, לא הוחל. תוכל לבחור ידנית מה-Multi-Cam." }]);
+                          }},
+                        ],
+                      },
+                    ]);
+                  }}
+                />
+              )}
+
+              {rightTab === "transitions" && (
+                <div className="p-4 overflow-y-auto h-full">
+                  <TransitionsPanel
+                    sceneTransitions={sceneTransitions}
+                    onTransitionChange={(sceneIndex, type) =>
+                      setSceneTransitions(prev => ({ ...prev, [sceneIndex]: type }))
+                    }
+                    sceneCount={scenes.length}
+                    activeScene={activeScene}
+                  />
+                </div>
+              )}
+
+              {rightTab === "pacing" && (
+                <div className="p-4 overflow-y-auto h-full">
+                  <PacingPanel
+                    clips={scenes.map((_, i) => ({
+                      sceneIndex: i,
+                      durationSec: sceneDurations[i] ?? 0,
+                      label: `סצנה ${i + 1}`,
+                    }))}
+                    activeScene={activeScene}
+                    onSceneClick={(i) => {
+                      setActiveScene(i);
+                      setActiveAngle(0);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>
