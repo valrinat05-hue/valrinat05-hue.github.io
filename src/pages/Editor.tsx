@@ -83,6 +83,20 @@ interface SceneVideo {
   file?: File;
 }
 
+interface SceneDirectorPlan {
+  selected_clips: Array<{
+    angle: string;
+    trim_start_sec: number;
+    trim_end_sec: number | null;
+    order: number;
+    reason: string;
+    transition?: string;
+  }>;
+  rejected_clips: Array<{ angle: string; reason: string }>;
+  summary: string;
+  director_note?: string;
+}
+
 interface ChatAction {
   label: string;
   description?: string;
@@ -246,7 +260,12 @@ const Editor = () => {
   const [savedMergeSignature, setSavedMergeSignature] = useState<string | null>(null);
   const [sceneTransitions, setSceneTransitions] = useState<Record<number, TransitionType>>({});
   const [sceneDurations, setSceneDurations] = useState<Record<number, number>>({});
+  const [clipDurations, setClipDurations] = useState<Record<string, number>>({});
   const [rightTab, setRightTab] = useState<"ai" | "transitions" | "pacing" | "arc">("ai");
+  const [sceneAIPlan, setSceneAIPlan] = useState<Record<number, SceneDirectorPlan>>({});
+  const [sceneMergedVideos, setSceneMergedVideos] = useState<Record<number, string>>({});
+  const [isSceneDirecting, setIsSceneDirecting] = useState(false);
+  const [showMergedVideo, setShowMergedVideo] = useState<Record<number, boolean>>({});
   const [sceneNotes, setSceneNotes] = useState<Record<number, string>>({});
   const [editingNote, setEditingNote] = useState<number | null>(null);
   const [cutMode, setCutMode] = useState<"rough" | "fine">("rough");
@@ -1041,6 +1060,112 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
     void applyAIPrompt(label);
   };
 
+  const loadClipDuration = (url: string): Promise<number> =>
+    new Promise((resolve) => {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.onloadedmetadata = () => resolve(isFinite(v.duration) ? v.duration : 0);
+      v.onerror = () => resolve(0);
+      v.src = url;
+    });
+
+  const runSceneAIDirector = async () => {
+    const clips = sceneVideos[activeScene] || [];
+    if (clips.length === 0) { toast.error("אין קליפים לנתח בסצנה זו"); return; }
+    setIsSceneDirecting(true);
+    setRightTab("ai");
+    setChatMessages(prev => [...prev, { role: "ai", content: `🎬 מנתח ${clips.length} קליפים בסצנה ${activeScene + 1}...` }]);
+
+    try {
+      // Load durations for all clips
+      const durations = await Promise.all(clips.map((c, i) => {
+        const cached = clipDurations[`${activeScene}_${i}`];
+        return cached ? Promise.resolve(cached) : loadClipDuration(c.url);
+      }));
+      const durMap: Record<string, number> = {};
+      durations.forEach((d, i) => { durMap[`${activeScene}_${i}`] = d; });
+      setClipDurations(prev => ({ ...prev, ...durMap }));
+
+      const clipInfo = clips.map((c, i) => ({
+        angle: c.angle,
+        file_name: c.angle,
+        duration_sec: Math.round(durations[i]),
+      }));
+
+      const systemPrompt = `You are an expert film director and editor AI.
+Analyze the provided clips from a single scene and return ONLY a valid JSON object — no markdown, no explanation.`;
+
+      const userMsg = `Scene ${activeScene + 1} has ${clips.length} clips: ${JSON.stringify(clipInfo, null, 2)}
+
+Return this exact JSON structure:
+{
+  "selected_clips": [
+    {"angle":"זווית 1","trim_start_sec":3.0,"trim_end_sec":null,"order":1,"reason":"...","transition":"cut"}
+  ],
+  "rejected_clips": [{"angle":"זווית 3","reason":"..."}],
+  "summary": "תיאור קצר בעברית של תוכנית העריכה",
+  "director_note": "הערת במאי בעברית"
+}
+
+Rules (important):
+- trim_start_sec: skip slate/clapperboard — usually 2-5 seconds from start
+- Select the best shots: wide → medium → close-up order is cinematic
+- Reject blurry, shaky, over/underexposed, or duplicate shots
+- trim_end_sec: null means use until end of clip, or set a specific cut point
+- transition: "cut" for fast scenes, "dissolve" for emotional moments
+- Reply summary and director_note in Hebrew`;
+
+      const raw = await callClaude(systemPrompt, [{ role: "user", content: userMsg }], 2000);
+      const plan: SceneDirectorPlan = parseJsonResponse(raw);
+      setSceneAIPlan(prev => ({ ...prev, [activeScene]: plan }));
+
+      const acceptedCount = plan.selected_clips?.length ?? 0;
+      const rejectedCount = plan.rejected_clips?.length ?? 0;
+      setChatMessages(prev => [...prev, {
+        role: "ai",
+        content: `🎬 **תוכנית עריכה לסצנה ${activeScene + 1}:**\n\n${plan.summary}\n\n✅ נבחרו: **${acceptedCount} קליפים**\n❌ נדחו: **${rejectedCount} קליפים**\n\n📝 _${plan.director_note || ""}_`,
+        actions: [{
+          label: "▶ מזג לסצנה מוכנה",
+          type: "apply" as const,
+          onAction: () => void applySceneAIPlan(plan),
+        }],
+      }]);
+    } catch (err: any) {
+      toast.error("שגיאה בניתוח AI: " + err.message);
+      setChatMessages(prev => [...prev, { role: "ai", content: "❌ שגיאה בניתוח. נסי שוב." }]);
+    } finally {
+      setIsSceneDirecting(false);
+    }
+  };
+
+  const applySceneAIPlan = async (plan: SceneDirectorPlan) => {
+    const clips = sceneVideos[activeScene] || [];
+    const inputs: import("@/lib/videoMerge").SmartMergeInput[] = plan.selected_clips
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .flatMap(sp => {
+        const clip = clips.find(c => c.angle === sp.angle);
+        if (!clip) return [];
+        return [{ url: clip.url, index: sp.order, trimStartSec: sp.trim_start_sec ?? 0, trimEndSec: sp.trim_end_sec ?? null, playbackSpeed: 1.0 }];
+      });
+
+    if (inputs.length === 0) { toast.error("לא נמצאו קליפים למיזוג"); return; }
+
+    const toastId = toast.loading(`ממזג ${inputs.length} קליפים לסצנה אחת...`);
+    setIsSceneDirecting(true);
+    try {
+      const url = await smartMergeVideos(inputs, () => {}, colorAdjustments);
+      setSceneMergedVideos(prev => ({ ...prev, [activeScene]: url }));
+      setShowMergedVideo(prev => ({ ...prev, [activeScene]: true }));
+      toast.success("✅ הסצנה הממוזגת מוכנה!", { id: toastId });
+      setChatMessages(prev => [...prev, { role: "ai", content: `✅ **הסצנה ${activeScene + 1} מוכנה!**\n\nממוזגה מ-${inputs.length} קליפים.\nאשרי ושמרי כשאת מרוצה.` }]);
+    } catch (err: any) {
+      toast.error("שגיאה במיזוג: " + err.message, { id: toastId });
+    } finally {
+      setIsSceneDirecting(false);
+    }
+  };
+
   const isSceneApproved = approvedScenes.has(activeScene);
   const isSceneSaved = savedScenes.has(activeScene);
 
@@ -1453,6 +1578,29 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                 </Button>
                 <span className="text-sm text-muted-foreground">סצנה {activeScene + 1}/{project.scenes_count}</span>
                 <div className="flex-1" />
+                {/* AI Director button */}
+                {currentVideos.length > 0 && (
+                  <Button
+                    size="sm"
+                    onClick={() => { void runSceneAIDirector(); }}
+                    disabled={isSceneDirecting}
+                    className="gap-1.5 text-xs bg-primary/90 hover:bg-primary"
+                  >
+                    {isSceneDirecting
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <Wand2 className="h-3.5 w-3.5" />}
+                    {isSceneDirecting ? "מנתח..." : "🎬 AI במאי"}
+                  </Button>
+                )}
+                {/* Merged video toggle */}
+                {sceneMergedVideos[activeScene] && (
+                  <button
+                    onClick={() => setShowMergedVideo(prev => ({ ...prev, [activeScene]: !prev[activeScene] }))}
+                    className={`text-xs px-2 py-1 rounded border transition-colors ${showMergedVideo[activeScene] ? "border-green-500/50 text-green-400 bg-green-500/10" : "border-border text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {showMergedVideo[activeScene] ? "✅ ממוזג" : "▶ הצג ממוזג"}
+                  </button>
+                )}
                 {/* Rough / Fine Cut toggle */}
                 <div className="flex rounded-lg border border-border overflow-hidden text-xs">
                   <button
@@ -1489,7 +1637,14 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
               <div className="flex-1 flex flex-col overflow-auto">
                 {/* Main video player */}
                 <div className="flex-1 flex items-center justify-center bg-black/40 relative min-h-[300px]">
-                  {currentVideo ? (
+                  {showMergedVideo[activeScene] && sceneMergedVideos[activeScene] ? (
+                    <video
+                      src={sceneMergedVideos[activeScene]}
+                      className="max-h-full max-w-full object-contain"
+                      controls
+                      playsInline
+                    />
+                  ) : currentVideo ? (
                     <video
                       ref={videoRef}
                       src={currentVideo.url}
@@ -1504,6 +1659,7 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                         const dur = (e.target as HTMLVideoElement).duration;
                         if (dur && isFinite(dur)) {
                           setSceneDurations(prev => ({ ...prev, [activeScene]: dur }));
+                          setClipDurations(prev => ({ ...prev, [`${activeScene}_${activeAngle}`]: dur }));
                         }
                       }}
                     />
@@ -1959,8 +2115,42 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
             </div>
 
             {/* Tab content */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 overflow-hidden flex flex-col">
               {rightTab === "ai" && (
+                <>
+                {sceneAIPlan[activeScene] && stage === "editing" && (
+                  <div className="shrink-0 border-b border-border px-3 py-2 space-y-1.5 bg-primary/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-primary">🎬 תוכנית AI לסצנה {activeScene + 1}</span>
+                      {sceneMergedVideos[activeScene] ? (
+                        <a href={sceneMergedVideos[activeScene]} download={`scene_${activeScene + 1}_merged.mp4`}
+                          className="text-[10px] text-green-400 border border-green-500/30 px-2 py-0.5 rounded hover:bg-green-500/10">
+                          ⬇ הורד
+                        </a>
+                      ) : (
+                        <button onClick={() => void applySceneAIPlan(sceneAIPlan[activeScene])}
+                          disabled={isSceneDirecting}
+                          className="text-[10px] text-primary border border-primary/30 px-2 py-0.5 rounded hover:bg-primary/10 disabled:opacity-50">
+                          {isSceneDirecting ? "ממזג..." : "▶ מזג עכשיו"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      {sceneAIPlan[activeScene].selected_clips.map((c, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                          <span className="text-green-400 font-bold w-3">{c.order}.</span>
+                          <span className="text-foreground font-medium truncate flex-1">{c.angle}</span>
+                          <span className="text-muted-foreground shrink-0">{c.trim_start_sec}s→{c.trim_end_sec ?? "סוף"}</span>
+                        </div>
+                      ))}
+                      {sceneAIPlan[activeScene].rejected_clips.length > 0 && (
+                        <div className="text-[10px] text-muted-foreground pt-0.5">
+                          ❌ נדחו: {sceneAIPlan[activeScene].rejected_clips.map(r => r.angle).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <AIChatPanel
                   messages={chatMessages}
                   onSendMessage={handleSendMessage}
@@ -1985,6 +2175,7 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                     ]);
                   }}
                 />
+                </>
               )}
 
               {rightTab === "transitions" && (
