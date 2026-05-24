@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Wand2, Play, Pause, RotateCcw } from "lucide-react";
+import { Play, Pause, RotateCcw, Circle, Square, Wand2, Check, Keyboard } from "lucide-react";
 
 interface SceneVideo {
   id?: string;
@@ -9,11 +9,10 @@ interface SceneVideo {
   file?: File;
 }
 
-interface AIRecommendation {
+export interface CutPoint {
+  timeSec: number;
   angleIndex: number;
-  startSec: number;
-  endSec: number;
-  reason: string;
+  angleLabel: string;
 }
 
 interface MultiCamViewProps {
@@ -21,107 +20,170 @@ interface MultiCamViewProps {
   onAngleSelect: (index: number) => void;
   activeAngle: number;
   sceneIndex: number;
+  onCutPlanReady?: (cuts: CutPoint[]) => void;
 }
 
-// Simple AI Director logic — selects best angle per time segment
-const generateRecommendations = (videos: SceneVideo[]): AIRecommendation[] => {
-  if (videos.length === 0) return [];
-  const recs: AIRecommendation[] = [];
-  const segmentLength = 5; // seconds per segment
-  const totalSegments = 6; // analyze 30 seconds
+const ANGLE_COLORS = [
+  "border-blue-500 ring-blue-500",
+  "border-green-500 ring-green-500",
+  "border-amber-500 ring-amber-500",
+  "border-purple-500 ring-purple-500",
+  "border-rose-500 ring-rose-500",
+  "border-cyan-500 ring-cyan-500",
+];
 
-  const patterns = [
-    { angle: 0, reason: "פתיחה רחבה — מציגה את הסצנה" },
-    { angle: Math.min(1, videos.length - 1), reason: "מעבר למדיום — מתמקד בפעולה" },
-    { angle: Math.min(2, videos.length - 1), reason: "תקריב — לכידת רגש" },
-    { angle: Math.min(1, videos.length - 1), reason: "חזרה למדיום — המשך פעולה" },
-    { angle: Math.min(2, videos.length - 1), reason: "תקריב — רגע מפתח" },
-    { angle: 0, reason: "סיום רחב — סוגר את הסצנה" },
-  ];
+const ANGLE_BG = [
+  "bg-blue-500",
+  "bg-green-500",
+  "bg-amber-500",
+  "bg-purple-500",
+  "bg-rose-500",
+  "bg-cyan-500",
+];
 
-  for (let i = 0; i < totalSegments; i++) {
-    const pattern = patterns[i % patterns.length];
-    recs.push({
-      angleIndex: pattern.angle,
-      startSec: i * segmentLength,
-      endSec: (i + 1) * segmentLength,
-      reason: pattern.reason,
-    });
-  }
-
-  return recs;
-};
-
-const MultiCamView = ({ videos, onAngleSelect, activeAngle, sceneIndex }: MultiCamViewProps) => {
+const MultiCamView = ({
+  videos,
+  onAngleSelect,
+  activeAngle,
+  sceneIndex,
+  onCutPlanReady,
+}: MultiCamViewProps) => {
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [showAI, setShowAI] = useState(false);
-  const [recommendations, setRecommendations] = useState<AIRecommendation[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [cutPoints, setCutPoints] = useState<CutPoint[]>([]);
+  const [showCutPlan, setShowCutPlan] = useState(false);
+  const [showKeyHints, setShowKeyHints] = useState(false);
   const animFrameRef = useRef<number>();
+  const recordingStartRef = useRef<number>(0);
 
-  const gridCols = videos.length <= 1 ? 1 : videos.length <= 4 ? 2 : 3;
+  const gridCols = videos.length <= 2 ? 2 : videos.length <= 4 ? 2 : 3;
 
-  useEffect(() => {
-    setRecommendations(generateRecommendations(videos));
-  }, [videos]);
-
+  // Sync all videos to master (video[0])
   const syncPlayback = useCallback(() => {
     const master = videoRefs.current[0];
     if (!master) return;
-    setCurrentTime(master.currentTime);
-
-    // Sync all videos to master time
+    const t = master.currentTime;
+    setCurrentTime(t);
     videoRefs.current.forEach((v, i) => {
-      if (i > 0 && v && Math.abs(v.currentTime - master.currentTime) > 0.3) {
-        v.currentTime = master.currentTime;
-      }
+      if (i > 0 && v && Math.abs(v.currentTime - t) > 0.25) v.currentTime = t;
     });
-
-    if (isPlaying) {
-      animFrameRef.current = requestAnimationFrame(syncPlayback);
-    }
-  }, [isPlaying]);
+    if (!master.paused) animFrameRef.current = requestAnimationFrame(syncPlayback);
+  }, []);
 
   useEffect(() => {
-    if (isPlaying) {
-      animFrameRef.current = requestAnimationFrame(syncPlayback);
-    }
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    };
-  }, [isPlaying, syncPlayback]);
+    return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); };
+  }, []);
 
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
+    const master = videoRefs.current[0];
+    if (!master) return;
     if (isPlaying) {
       videoRefs.current.forEach(v => v?.pause());
       setIsPlaying(false);
     } else {
-      videoRefs.current.forEach(v => v?.play());
+      videoRefs.current.forEach((v) => {
+        if (v) { v.currentTime = master.currentTime; v.play(); }
+      });
       setIsPlaying(true);
+      animFrameRef.current = requestAnimationFrame(syncPlayback);
     }
-  };
+  }, [isPlaying, syncPlayback]);
 
-  const resetAll = () => {
-    videoRefs.current.forEach(v => {
-      if (v) {
-        v.currentTime = 0;
-        v.pause();
-      }
-    });
+  const resetAll = useCallback(() => {
+    videoRefs.current.forEach(v => { if (v) { v.pause(); v.currentTime = 0; } });
     setIsPlaying(false);
     setCurrentTime(0);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+  }, []);
+
+  // Switch angle — record cut if in recording mode
+  const switchAngle = useCallback((index: number) => {
+    onAngleSelect(index);
+    if (isRecording) {
+      const t = videoRefs.current[0]?.currentTime ?? currentTime;
+      setCutPoints(prev => [...prev, {
+        timeSec: Math.round(t * 100) / 100,
+        angleIndex: index,
+        angleLabel: videos[index]?.angle ?? `זווית ${index + 1}`,
+      }]);
+    }
+  }, [isRecording, currentTime, onAngleSelect, videos]);
+
+  // Keyboard shortcuts: 1-6 = angles, Space = play/pause
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.code === "Space") { e.preventDefault(); togglePlay(); return; }
+      const num = parseInt(e.key, 10);
+      if (num >= 1 && num <= videos.length) switchAngle(num - 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePlay, switchAngle, videos.length]);
+
+  const startRecording = () => {
+    setCutPoints([{
+      timeSec: 0,
+      angleIndex: activeAngle,
+      angleLabel: videos[activeAngle]?.angle ?? "זווית 1",
+    }]);
+    setIsRecording(true);
+    recordingStartRef.current = currentTime;
+    if (!isPlaying) togglePlay();
   };
 
-  // Find the AI-recommended angle for the current time
-  const currentRec = recommendations.find(
-    r => currentTime >= r.startSec && currentTime < r.endSec
-  );
+  const stopRecording = () => {
+    setIsRecording(false);
+    videoRefs.current.forEach(v => v?.pause());
+    setIsPlaying(false);
+    setShowCutPlan(true);
+    onCutPlanReady?.(cutPoints);
+  };
+
+  const applyCutPlan = () => {
+    if (cutPoints.length > 0) {
+      onAngleSelect(cutPoints[cutPoints.length - 1].angleIndex);
+    }
+    setShowCutPlan(false);
+  };
+
+  // Auto-generate AI cut plan
+  const generateAICutPlan = useCallback(() => {
+    if (videos.length === 0) return;
+    const dur = duration || 30;
+    const plan: CutPoint[] = [];
+    const patterns = [
+      { angle: 0, pct: 0, label: "פתיחה רחבה" },
+      { angle: Math.min(1, videos.length - 1), pct: 0.18, label: "מדיום שוט" },
+      { angle: Math.min(2, videos.length - 1), pct: 0.35, label: "תקריב רגש" },
+      { angle: Math.min(1, videos.length - 1), pct: 0.52, label: "מדיום — המשך" },
+      { angle: 0, pct: 0.68, label: "ריאקשן רחב" },
+      { angle: Math.min(2, videos.length - 1), pct: 0.82, label: "תקריב — שיא" },
+      { angle: 0, pct: 0.93, label: "סיום רחב" },
+    ];
+    patterns.forEach(p => {
+      if (p.angle < videos.length) {
+        plan.push({
+          timeSec: Math.round(p.pct * dur * 100) / 100,
+          angleIndex: p.angle,
+          angleLabel: videos[p.angle]?.angle ?? `זווית ${p.angle + 1}`,
+        });
+      }
+    });
+    setCutPoints(plan);
+    setShowCutPlan(true);
+    onCutPlanReady?.(plan);
+  }, [videos, duration, onCutPlanReady]);
+
+  const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
   if (videos.length <= 1) return null;
 
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
+    <div className="bg-card border border-border rounded-xl overflow-hidden" dir="rtl">
       {/* Header */}
       <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
         <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -129,122 +191,188 @@ const MultiCamView = ({ videos, onAngleSelect, activeAngle, sceneIndex }: MultiC
           <span className="text-xs text-muted-foreground font-normal">({videos.length} זוויות)</span>
         </h3>
         <div className="flex items-center gap-2">
-          <Button
-            variant={showAI ? "default" : "outline"}
-            size="sm"
-            onClick={() => setShowAI(!showAI)}
-            className="gap-1.5 text-xs h-7"
-          >
-            <Wand2 className="h-3 w-3" />
-            {showAI ? "AI פעיל" : "הפעל AI"}
+          <Button variant="ghost" size="sm" onClick={() => setShowKeyHints(h => !h)} className="h-7 w-7 p-0 text-muted-foreground">
+            <Keyboard className="h-3.5 w-3.5" />
           </Button>
+          {!isRecording ? (
+            <Button variant="outline" size="sm" onClick={generateAICutPlan} className="gap-1.5 text-xs h-7">
+              <Wand2 className="h-3 w-3" /> AI חיתוך
+            </Button>
+          ) : null}
+          {!isRecording ? (
+            <Button size="sm" onClick={startRecording} className="gap-1.5 text-xs h-7 bg-red-600 hover:bg-red-700">
+              <Circle className="h-3 w-3 fill-current" /> הקלט עריכה
+            </Button>
+          ) : (
+            <Button size="sm" onClick={stopRecording} className="gap-1.5 text-xs h-7 bg-red-600 hover:bg-red-700 animate-pulse">
+              <Square className="h-3 w-3 fill-current" /> עצור הקלטה
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* Video Grid */}
-      <div className={`grid gap-1 p-1`} style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}>
-        {videos.map((video, i) => {
-          const isAIRecommended = showAI && currentRec?.angleIndex === i;
-          const isActive = activeAngle === i;
+      {/* Keyboard hints */}
+      {showKeyHints && (
+        <div className="px-4 py-2 bg-muted/30 border-b border-border flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <span>⌨️ קיצורים:</span>
+          {videos.map((v, i) => (
+            <span key={i} className="bg-muted px-1.5 py-0.5 rounded font-mono">{i + 1} = {v.angle}</span>
+          ))}
+          <span className="bg-muted px-1.5 py-0.5 rounded font-mono">רווח = נגן/עצור</span>
+        </div>
+      )}
 
+      {/* Recording indicator */}
+      {isRecording && (
+        <div className="px-4 py-1.5 bg-red-500/10 border-b border-red-500/20 flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-xs text-red-400 font-medium">מקליט עריכה — לחץ על זווית לחיתוך</span>
+          <span className="text-xs text-red-300 mr-auto">{cutPoints.length} חיתוכים</span>
+        </div>
+      )}
+
+      {/* Video Grid */}
+      <div
+        className="grid gap-1 p-1"
+        style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}
+      >
+        {videos.map((video, i) => {
+          const isActive = activeAngle === i;
+          const colorClass = ANGLE_COLORS[i % ANGLE_COLORS.length];
           return (
             <div
               key={i}
-              onClick={() => onAngleSelect(i)}
-              className={`relative cursor-pointer rounded-lg overflow-hidden aspect-video transition-all duration-300 ${
-                isAIRecommended
-                  ? "ring-2 ring-primary shadow-lg shadow-primary/20 scale-[1.02] z-10"
-                  : isActive
-                    ? "ring-2 ring-accent"
-                    : "ring-1 ring-border hover:ring-primary/40"
-              }`}
+              onClick={() => switchAngle(i)}
+              className={`relative cursor-pointer rounded-lg overflow-hidden aspect-video transition-all duration-150
+                ${isActive
+                  ? `ring-2 ${colorClass} shadow-lg scale-[1.02] z-10`
+                  : `ring-1 ring-border hover:ring-2 ${colorClass} hover:scale-[1.01]`
+                }`}
             >
               <video
                 ref={el => { videoRefs.current[i] = el; }}
                 src={video.url}
                 className="w-full h-full object-cover"
                 preload="metadata"
-                muted={i > 0}
+                muted={true}
                 playsInline
-                onEnded={() => setIsPlaying(false)}
+                onLoadedMetadata={(e) => {
+                  if (i === 0) setDuration((e.target as HTMLVideoElement).duration || 0);
+                }}
+                onEnded={() => { if (i === 0) { setIsPlaying(false); if (isRecording) stopRecording(); } }}
               />
 
-              {/* Angle label */}
-              <div className="absolute bottom-1 right-1 flex gap-1">
-                <span className="text-[10px] bg-background/80 backdrop-blur-sm text-foreground px-1.5 py-0.5 rounded">
+              {/* Angle badge */}
+              <div className="absolute bottom-1 right-1 left-1 flex items-end justify-between">
+                <span className={`text-[10px] ${ANGLE_BG[i % ANGLE_BG.length]} text-white px-1.5 py-0.5 rounded font-semibold`}>
+                  {i + 1}
+                </span>
+                <span className="text-[10px] bg-background/80 backdrop-blur-sm text-foreground px-1.5 py-0.5 rounded truncate max-w-[70%]">
                   {video.angle}
                 </span>
               </div>
 
-              {/* AI Highlight */}
-              {isAIRecommended && (
-                <div className="absolute top-1 left-1 right-1">
-                  <div className="flex items-center gap-1 bg-primary/90 backdrop-blur-sm text-primary-foreground px-2 py-1 rounded-md">
-                    <Wand2 className="h-3 w-3 flex-shrink-0" />
-                    <span className="text-[10px] font-medium truncate">{currentRec.reason}</span>
-                  </div>
+              {/* Active overlay */}
+              {isActive && (
+                <div className={`absolute top-1 left-1 ${ANGLE_BG[i % ANGLE_BG.length]} text-white text-[10px] px-1.5 py-0.5 rounded font-bold`}>
+                  LIVE
                 </div>
               )}
 
-              {/* Active marker */}
-              {isActive && !isAIRecommended && (
-                <div className="absolute top-1 left-1">
-                  <span className="text-[10px] bg-accent/90 text-accent-foreground px-1.5 py-0.5 rounded">
-                    נבחר
-                  </span>
-                </div>
-              )}
+              {/* Keyboard hint */}
+              <div className="absolute top-1 right-1 bg-background/60 text-foreground text-[10px] w-4 h-4 rounded flex items-center justify-center font-mono opacity-60">
+                {i + 1}
+              </div>
             </div>
           );
         })}
       </div>
 
-      {/* Controls */}
+      {/* Playback controls */}
       <div className="px-4 py-2 border-t border-border flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={togglePlay} className="gap-1.5 h-7">
           {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           {isPlaying ? "עצור" : "נגן הכל"}
         </Button>
         <Button variant="ghost" size="sm" onClick={resetAll} className="gap-1.5 h-7">
-          <RotateCcw className="h-3.5 w-3.5" />
-          אפס
+          <RotateCcw className="h-3.5 w-3.5" /> אפס
         </Button>
 
-        <div className="flex-1" />
+        {/* Progress bar */}
+        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden cursor-pointer"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const pct = (e.clientX - rect.left) / rect.width;
+            const t = pct * duration;
+            videoRefs.current.forEach(v => { if (v) v.currentTime = t; });
+            setCurrentTime(t);
+          }}
+        >
+          <div
+            className="h-full bg-primary rounded-full transition-none"
+            style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+          />
+        </div>
 
-        {showAI && currentRec && (
-          <div className="text-xs text-muted-foreground">
-            ⏱ {Math.floor(currentTime)}s — AI ממליץ: <span className="text-primary font-medium">{videos[currentRec.angleIndex]?.angle}</span>
-          </div>
-        )}
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {fmtTime(currentTime)} / {fmtTime(duration)}
+        </span>
       </div>
 
-      {/* AI Timeline visualization */}
-      {showAI && recommendations.length > 0 && (
-        <div className="px-4 pb-3">
-          <div className="flex gap-0.5 h-6 rounded-md overflow-hidden">
-            {recommendations.map((rec, i) => {
-              const isCurrent = currentTime >= rec.startSec && currentTime < rec.endSec;
-              const colors = [
-                "bg-blue-500/60", "bg-green-500/60", "bg-amber-500/60",
-                "bg-purple-500/60", "bg-rose-500/60", "bg-cyan-500/60",
-              ];
+      {/* Cut plan timeline */}
+      {cutPoints.length > 0 && (
+        <div className="px-4 pb-3 border-t border-border pt-2">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-semibold text-foreground">תוכנית חיתוכים ({cutPoints.length})</span>
+            <div className="flex gap-2">
+              <button onClick={() => { setCutPoints([]); setShowCutPlan(false); }} className="text-[10px] text-muted-foreground hover:text-foreground">נקה</button>
+              {showCutPlan && (
+                <button onClick={applyCutPlan} className="text-[10px] text-primary font-semibold flex items-center gap-0.5">
+                  <Check className="h-3 w-3" /> החל
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Visual timeline */}
+          <div className="relative h-6 bg-muted/40 rounded-lg overflow-hidden">
+            {duration > 0 && cutPoints.map((cut, idx) => {
+              const nextCut = cutPoints[idx + 1];
+              const leftPct = (cut.timeSec / duration) * 100;
+              const widthPct = nextCut
+                ? ((nextCut.timeSec - cut.timeSec) / duration) * 100
+                : 100 - leftPct;
+              const bgClass = ANGLE_BG[cut.angleIndex % ANGLE_BG.length];
               return (
                 <div
-                  key={i}
-                  className={`flex-1 flex items-center justify-center text-[9px] font-medium transition-all ${
-                    colors[rec.angleIndex % colors.length]
-                  } ${isCurrent ? "ring-2 ring-primary scale-y-110" : "opacity-70"}`}
-                  title={rec.reason}
+                  key={idx}
+                  className={`absolute top-0 h-full ${bgClass} opacity-70 flex items-center justify-center`}
+                  style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 0.5)}%` }}
+                  title={`${cut.angleLabel} @ ${fmtTime(cut.timeSec)}`}
                 >
-                  {videos[rec.angleIndex]?.angle?.replace("זווית ", "")}
+                  <span className="text-[9px] text-white font-bold px-0.5 truncate">
+                    {cut.angleIndex + 1}
+                  </span>
                 </div>
               );
             })}
+            {/* Current time cursor */}
+            {duration > 0 && (
+              <div
+                className="absolute top-0 w-0.5 h-full bg-white/80 z-10"
+                style={{ left: `${(currentTime / duration) * 100}%` }}
+              />
+            )}
           </div>
-          <div className="flex justify-between text-[9px] text-muted-foreground mt-1">
-            <span>0s</span>
-            <span>30s</span>
+
+          {/* Cut list */}
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {cutPoints.map((cut, idx) => (
+              <div key={idx} className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${ANGLE_BG[cut.angleIndex % ANGLE_BG.length]} text-white`}>
+                <span className="font-bold">{fmtTime(cut.timeSec)}</span>
+                <span>→ {cut.angleLabel}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}

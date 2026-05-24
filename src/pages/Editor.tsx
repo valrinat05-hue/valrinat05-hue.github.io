@@ -47,6 +47,8 @@ import AIChatPanel from "@/components/editor/AIChatPanel";
 import EditingStylePicker, { EditingStyle } from "@/components/editor/EditingStylePicker";
 import TransitionsPanel, { TransitionType } from "@/components/editor/TransitionsPanel";
 import PacingPanel from "@/components/editor/PacingPanel";
+import StoryArcPanel from "@/components/editor/StoryArcPanel";
+import { CutPoint } from "@/components/editor/MultiCamView";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -244,7 +246,13 @@ const Editor = () => {
   const [savedMergeSignature, setSavedMergeSignature] = useState<string | null>(null);
   const [sceneTransitions, setSceneTransitions] = useState<Record<number, TransitionType>>({});
   const [sceneDurations, setSceneDurations] = useState<Record<number, number>>({});
-  const [rightTab, setRightTab] = useState<"ai" | "transitions" | "pacing">("ai");
+  const [rightTab, setRightTab] = useState<"ai" | "transitions" | "pacing" | "arc">("ai");
+  const [sceneNotes, setSceneNotes] = useState<Record<number, string>>({});
+  const [editingNote, setEditingNote] = useState<number | null>(null);
+  const [cutMode, setCutMode] = useState<"rough" | "fine">("rough");
+  const [sceneCutPlans, setSceneCutPlans] = useState<Record<number, CutPoint[]>>({});
+  const [sceneOrder, setSceneOrder] = useState<number[]>([]);
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -387,6 +395,7 @@ const Editor = () => {
         });
         setSceneVideos(videoMap);
       }
+      setSceneOrder(Array.from({ length: scenesData.length }, (_, i) => i));
 
       setStage("scene-list");
     };
@@ -488,6 +497,10 @@ const Editor = () => {
     hasVideos: (sceneVideos[i] || []).length > 0,
     videoCount: (sceneVideos[i] || []).length,
   }));
+
+  const orderedScenesWithVideos = sceneOrder.length === scenesWithVideos.length
+    ? sceneOrder.map(i => scenesWithVideos[i]).filter(Boolean)
+    : scenesWithVideos;
 
   const allScenesSaved = scenesWithVideos
     .filter((s) => s.hasVideos)
@@ -991,13 +1004,33 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
               </div>
               <div className="flex-1 overflow-auto p-6">
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {scenesWithVideos.map((scene) => {
+                  {orderedScenesWithVideos.map((scene) => {
                     const saved = savedScenes.has(scene.index);
                     const isUploading = uploadingScene === scene.index;
+                    const isDragging = dragFrom === scene.index;
+                    const hasNote = !!sceneNotes[scene.index];
                     return (
                       <div
                         key={scene.index}
-                        className={`relative flex flex-col items-center gap-3 p-5 rounded-xl border-2 transition-all ${
+                        draggable
+                        onDragStart={() => setDragFrom(scene.index)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (dragFrom === null || dragFrom === scene.index) { setDragFrom(null); return; }
+                          setSceneOrder(prev => {
+                            const next = [...prev];
+                            const fromPos = next.indexOf(dragFrom);
+                            const toPos = next.indexOf(scene.index);
+                            next.splice(fromPos, 1);
+                            next.splice(toPos, 0, dragFrom);
+                            return next;
+                          });
+                          setDragFrom(null);
+                        }}
+                        onDragEnd={() => setDragFrom(null)}
+                        className={`relative flex flex-col items-center gap-3 p-5 rounded-xl border-2 transition-all cursor-grab active:cursor-grabbing select-none ${
+                          isDragging ? "opacity-50 scale-95" :
                           saved
                             ? "bg-green-500/10 border-green-500/40"
                             : scene.hasVideos
@@ -1011,7 +1044,12 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                           </div>
                         )}
                         <FolderOpen className={`h-10 w-10 ${saved ? "text-green-400" : scene.hasVideos ? "text-primary" : "text-muted-foreground"}`} />
-                        <span className="text-sm font-semibold text-foreground">סצנה {scene.index + 1}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-semibold text-foreground">סצנה {scene.index + 1}</span>
+                          {hasNote && (
+                            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded-full border border-yellow-500/30">📝</span>
+                          )}
+                        </div>
                         {scene.hasVideos && (
                           <span className="text-[11px] text-muted-foreground mb-1">{scene.videoCount} זוויות</span>
                         )}
@@ -1305,13 +1343,45 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
           {/* ======= SCENE EDITING VIEW ======= */}
           {stage === "editing" && (
             <>
-              <div className="px-4 py-2 border-b border-border bg-card flex items-center gap-2">
+              <div className="px-4 py-2 border-b border-border bg-card flex items-center gap-2 flex-wrap">
                 <Button variant="ghost" size="sm" onClick={backToSceneList} className="gap-1">
                   <ChevronLeft className="h-4 w-4" />
-                  חזרה לסצנות
+                  חזרה
                 </Button>
-                <span className="text-sm text-muted-foreground">סצנה {activeScene + 1} מתוך {project.scenes_count}</span>
+                <span className="text-sm text-muted-foreground">סצנה {activeScene + 1}/{project.scenes_count}</span>
+                <div className="flex-1" />
+                {/* Rough / Fine Cut toggle */}
+                <div className="flex rounded-lg border border-border overflow-hidden text-xs">
+                  <button
+                    onClick={() => setCutMode("rough")}
+                    className={`px-3 py-1 transition-colors ${cutMode === "rough" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                  >✂️ גס</button>
+                  <button
+                    onClick={() => setCutMode("fine")}
+                    className={`px-3 py-1 transition-colors ${cutMode === "fine" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                  >🎯 עדין</button>
+                </div>
+                {/* Scene note badge */}
+                <button
+                  onClick={() => setEditingNote(editingNote === activeScene ? null : activeScene)}
+                  className={`text-xs px-2 py-1 rounded border transition-colors ${sceneNotes[activeScene] ? "border-yellow-500/50 text-yellow-400 bg-yellow-500/10" : "border-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  📝 {sceneNotes[activeScene] ? "הערה" : "+ הערה"}
+                </button>
               </div>
+              {/* Director note inline editor */}
+              {editingNote === activeScene && (
+                <div className="px-4 py-2 border-b border-border bg-yellow-500/5">
+                  <textarea
+                    className="w-full text-xs bg-transparent text-foreground placeholder-muted-foreground outline-none resize-none"
+                    rows={2}
+                    placeholder="הערות במאי לסצנה זו..."
+                    value={sceneNotes[activeScene] ?? ""}
+                    onChange={e => setSceneNotes(prev => ({ ...prev, [activeScene]: e.target.value }))}
+                    autoFocus
+                  />
+                </div>
+              )}
 
               <div className="flex-1 flex flex-col overflow-auto">
                 {/* Main video player */}
@@ -1369,7 +1439,15 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                       onAngleSelect={(i) => { setActiveAngle(i); setIsPlaying(false); }}
                       activeAngle={activeAngle}
                       sceneIndex={activeScene}
+                      onCutPlanReady={(cuts) =>
+                        setSceneCutPlans(prev => ({ ...prev, [activeScene]: cuts }))
+                      }
                     />
+                    {sceneCutPlans[activeScene]?.length > 0 && (
+                      <p className="text-[10px] text-muted-foreground mt-1 text-center">
+                        ✅ תוכנית חיתוכים נשמרה — {sceneCutPlans[activeScene].length} חיתוכים
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1762,7 +1840,7 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
           <div className="w-80 shrink-0 border-l border-border flex flex-col bg-card overflow-hidden">
             {/* Tab bar */}
             <div className="flex border-b border-border shrink-0">
-              {([ ["ai", "🤖 AI"], ["transitions", "🎞️ מעברים"], ["pacing", "📊 קצב"] ] as const).map(([tab, label]) => (
+              {([ ["ai", "🤖 AI"], ["transitions", "🎞️ מעברים"], ["pacing", "📊 קצב"], ["arc", "📖 עלילה"] ] as const).map(([tab, label]) => (
                 <button
                   key={tab}
                   onClick={() => setRightTab(tab)}
@@ -1832,6 +1910,36 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                       setActiveScene(i);
                       setActiveAngle(0);
                     }}
+                  />
+                </div>
+              )}
+
+              {rightTab === "arc" && (
+                <div className="p-4 overflow-y-auto h-full">
+                  <StoryArcPanel
+                    scenes={scenes.map((_, i) => {
+                      const arc = editPlan?.story_arc;
+                      let act: 1 | 2 | 3 | undefined;
+                      if (arc) {
+                        if (arc.act1_scenes?.includes(i + 1)) act = 1;
+                        else if (arc.act2_scenes?.includes(i + 1)) act = 2;
+                        else if (arc.act3_scenes?.includes(i + 1)) act = 3;
+                      }
+                      const sp = editPlan?.scene_plan?.find(p => p.scene_number === i + 1);
+                      return {
+                        sceneIndex: i,
+                        emotionalIntensity: sp?.quality_score != null ? sp.quality_score * 10 : 50,
+                        label: `סצנה ${i + 1}`,
+                        mood: sp?.highlight_description || sp?.notes || undefined,
+                        act,
+                      };
+                    })}
+                    activeScene={activeScene}
+                    onSceneClick={(i) => {
+                      setActiveScene(i);
+                      setActiveAngle(0);
+                    }}
+                    totalScenes={scenes.length || project.scenes_count}
                   />
                 </div>
               )}
