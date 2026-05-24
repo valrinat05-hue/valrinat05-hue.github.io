@@ -11,6 +11,101 @@ const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string;
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
+// ─── Professional Film Editing Knowledge Base ──────────────────────────────
+// Based on Walter Murch ("In the Blink of an Eye"), Sven Pape ("This Guy Edits"),
+// and professional editing principles from Studio Binder, No Film School, etc.
+const FILM_EDITING_KNOWLEDGE = `
+=== PROFESSIONAL FILM EDITING PRINCIPLES ===
+
+WALTER MURCH'S RULE OF SIX (hierarchy of cutting decisions):
+1. EMOTION (51%) — Does the cut feel emotionally right? ALWAYS protect emotion above all.
+2. STORY (23%) — Does it advance narrative/character?
+3. RHYTHM (10%) — Does it land at the rhythmically interesting moment?
+4. EYE TRACE (7%) — Where is the viewer's attention in the frame?
+5. PLANARITY (5%) — 2D screen grammar (screen direction, positions)
+6. 3D SPACE (4%) — Physical continuity of space
+Rule: sacrifice from the bottom upward. NEVER sacrifice emotion for technical correctness.
+
+PACING & RHYTHM:
+- Short cuts (under 2s) = urgency, adrenaline, action
+- Medium cuts (3-6s) = natural flow, dialogue, drama
+- Long takes (7s+) = contemplation, beauty, weight
+- Vary pace within a scene — rhythm contrast creates emotional impact
+- "Let it breathe": hold shots longer than comfortable during emotional peaks
+- A held shot signals to the audience: THIS MOMENT MATTERS
+
+WHEN TO CUT:
+- Cut ON ACTION (first third of a movement) — motion hides the edit
+- Cut on BLINKS — the eye's natural reset moment
+- Cut on IMPACT — punch, slam, surprise
+- Cut when a CHARACTER LOOKS somewhere — leads viewer's eye
+- Cut when EMOTION PEAKS on a face — not before, not after
+- Cut after SILENCE lands — let the pause complete before moving
+- NEVER cut away from a reaction before it finishes reading
+
+REACTION SHOTS (Kuleshov Effect):
+- The LISTENER'S face tells the story, not the speaker's
+- Show who RECEIVES the information, not just who delivers it
+- Two shots together create meaning neither shot has alone
+- Audience BECOMES the character when you show their reaction
+- Cut to reaction AFTER emotional line lands — let it breathe first
+- Reaction shots are more powerful than action shots in drama
+
+DIALOGUE EDITING:
+- Cut to LISTENER on emotionally important lines
+- Use J-CUTS: next scene's audio starts before the image cuts (creates anticipation)
+- Use L-CUTS: current scene's audio carries over into next shot (creates continuity)
+- Cut on PAUSES within speech for dramatic weight
+- Do NOT always cut to whoever is speaking — cut with intention
+- The PAUSE before a line is often more powerful than the line itself
+
+BUILDING TENSION:
+- Hold uncomfortable shots LONGER than expected — unease builds in stillness
+- DELAY reveals — don't cut to the answer too soon
+- Use SILENCE strategically — not all tension needs sound
+- Intercut two timelines to create parallel tension
+- Cut AWAY at the peak of tension, not after it resolves
+- The UNSEEN is more terrifying than the seen
+
+CONTINUITY RULES:
+- 180-DEGREE RULE: never cross the axis of action — it reverses screen direction
+- MATCH ON ACTION: cut at the same moment in an action, continued in next shot
+- EYELINE MATCH: after a character looks off-screen, show what they see
+- Screen direction must stay consistent across cuts
+- Cut FROM movement TO movement — motion masks the edit
+
+MUSIC & SOUND:
+- Music PRIMES emotion, visuals DELIVER it — don't fight each other
+- Silence is a design choice — strategic quiet is more powerful than constant sound
+- Cut music at the RIGHT moment for impact (not always a fade)
+- Sound design creates the world — ambient sound = reality
+- Start audio (music/ambience) before the visual cut for smooth transitions (J-cut)
+
+EMOTIONAL EDITING (Sven Pape / "This Guy Edits"):
+- Ask: "What does the audience NEED TO FEEL right now?"
+- Ask: "What does the audience NEED TO KNOW right now?"
+- The best cut is the one the audience never notices
+- End scenes on EMOTION, not information
+- Story first, technique second — rules exist to be broken when emotion requires it
+- Great editing is invisible — if the audience notices the edit, it failed
+- The audience feels what the CHARACTER feels, not what they see
+
+TRAILER EDITING:
+- Start with longer shots (establish mood), accelerate toward climax
+- Use audio bed first, build visuals to rhythm
+- Stopdowns: brief pauses in momentum that signal "more coming" — give audience breath
+- Alternate emotional slowness with frenetic energy
+- Pattern: dialogue line → beat → reaction → line → beat → reaction (escalating)
+
+ZOOM / CUTAWAY / REACTION SHOT RULES:
+- Zoom IN to reveal emotion or detail the audience missed
+- Cutaway = escape valve — use to compress time or add context
+- Reaction shot timing: cut just AFTER the emotional beat lands, not before
+- Never use a reaction shot just to cover a technical problem — it must serve story
+=== END EDITING PRINCIPLES ===
+`;
+// ────────────────────────────────────────────────────────────────────────────
+
 /** Call Claude and return the raw text response */
 async function callClaude(
   systemPrompt: string,
@@ -824,7 +919,9 @@ const Editor = () => {
         documentary: "documentary style",
       };
 
-      const systemPrompt = `You are a professional film editor AI. Create an editing plan as valid JSON.
+      const systemPrompt = `You are a professional film director and editor AI.
+${FILM_EDITING_KNOWLEDGE}
+Apply all editing principles above. Create an editing plan as valid JSON.
 Return ONLY a JSON object with this structure (no markdown):
 {
   "summary": "brief description",
@@ -921,8 +1018,10 @@ Return ONLY a JSON object with this structure (no markdown):
         content: m.content,
       }));
 
-      const systemPrompt = `You are a professional film editor AI assistant. The user is editing a film project.
-Current stage: ${stage}. Active scene index: ${activeScene}. Color adjustments: ${JSON.stringify(colorAdjustments)}.
+      const systemPrompt = `You are a professional film director and editor AI assistant.
+${FILM_EDITING_KNOWLEDGE}
+The user is editing a film project. Current stage: ${stage}. Active scene index: ${activeScene}. Color adjustments: ${JSON.stringify(colorAdjustments)}.
+When giving editing advice, reference specific principles above (Murch's rules, Kuleshov effect, J/L-cuts, etc.). Reply in Hebrew but use the principles in English internally.
 
 Respond with a JSON object (no markdown) containing:
 {
@@ -1168,8 +1267,9 @@ Reply with ONLY a single decimal number. Example: 3.5`,
         detected_action_start_sec: actionStarts[c.angle] ?? 3.0,
       }));
 
-      const systemPrompt = `You are an expert film director and editor AI.
-Analyze the provided clips from a single scene and return ONLY a valid JSON object — no markdown, no explanation.`;
+      const systemPrompt = `You are an expert film director and editor AI with deep knowledge of professional editing principles.
+${FILM_EDITING_KNOWLEDGE}
+Apply ALL of these principles when analyzing clips. Return ONLY a valid JSON object — no markdown, no explanation.`;
 
       const userMsg = `Scene ${activeScene + 1} has ${clips.length} clips: ${JSON.stringify(clipInfo, null, 2)}
 
