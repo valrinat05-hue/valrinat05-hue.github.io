@@ -1069,12 +1069,79 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
       v.src = url;
     });
 
+  const extractFrameBase64 = (videoUrl: string, timeSec: number): Promise<string | null> =>
+    new Promise((resolve) => {
+      const video = document.createElement("video");
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(null); return; }
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+      video.onloadedmetadata = () => {
+        if (timeSec >= video.duration) { resolve(null); return; }
+        video.currentTime = timeSec;
+      };
+      video.onseeked = () => {
+        try {
+          canvas.width = 320;
+          canvas.height = Math.round((320 / (video.videoWidth || 320)) * (video.videoHeight || 180));
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const b64 = canvas.toDataURL("image/jpeg", 0.65).split(",")[1];
+          resolve(b64 || null);
+        } catch { resolve(null); }
+      };
+      video.onerror = () => resolve(null);
+      video.src = videoUrl;
+      video.load();
+    });
+
+  const detectActionStart = async (clips: SceneVideo[]): Promise<Record<string, number>> => {
+    // Sample 5 frames per clip (0.5s – 7s) and ask Claude Vision when the actor starts
+    const sampleTs = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
+    const results: Record<string, number> = {};
+
+    await Promise.all(clips.map(async (clip) => {
+      const frames = (await Promise.all(sampleTs.map(t => extractFrameBase64(clip.url, t)))).filter(Boolean) as string[];
+      if (frames.length < 2) { results[clip.angle] = 3.0; return; }
+
+      const content: any[] = [
+        ...frames.map(data => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
+        {
+          type: "text",
+          text: `These ${frames.length} frames are from the start of a film clip (${sampleTs.slice(0, frames.length).map(t => t + "s").join(", ")}).
+The clip starts with a clapperboard slate. A director says "action" and then the actor begins performing.
+At which timestamp (seconds) does the ACTOR START their performance?
+Reply with ONLY a single decimal number. Example: 3.5`,
+        },
+      ];
+
+      try {
+        const res = await fetch(ANTHROPIC_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 20, messages: [{ role: "user", content }] }),
+        });
+        const data = await res.json();
+        const val = parseFloat(data?.content?.[0]?.text?.trim() ?? "");
+        results[clip.angle] = (isFinite(val) && val >= 0 && val <= 15) ? val : 3.0;
+      } catch { results[clip.angle] = 3.0; }
+    }));
+
+    return results;
+  };
+
   const runSceneAIDirector = async () => {
     const clips = sceneVideos[activeScene] || [];
     if (clips.length === 0) { toast.error("אין קליפים לנתח בסצנה זו"); return; }
     setIsSceneDirecting(true);
     setRightTab("ai");
-    setChatMessages(prev => [...prev, { role: "ai", content: `🎬 מנתח ${clips.length} קליפים בסצנה ${activeScene + 1}...` }]);
+    setChatMessages(prev => [...prev, { role: "ai", content: `🎬 מנתח ${clips.length} קליפים — מזהה תחילת אקשן בכל קליפ...` }]);
 
     try {
       // Load durations for all clips
@@ -1086,10 +1153,19 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
       durations.forEach((d, i) => { durMap[`${activeScene}_${i}`] = d; });
       setClipDurations(prev => ({ ...prev, ...durMap }));
 
+      // Visual detection: find action start in each clip
+      const actionStarts = await detectActionStart(clips);
+      const actionList = clips.map(c => `${c.angle}: ${(actionStarts[c.angle] ?? 3).toFixed(1)}s`).join(", ");
+      setChatMessages(prev => {
+        const msgs = [...prev];
+        msgs[msgs.length - 1] = { role: "ai", content: `🎬 זיהיתי תחילת אקשן: ${actionList}\nשולח לניתוח AI...` };
+        return msgs;
+      });
+
       const clipInfo = clips.map((c, i) => ({
         angle: c.angle,
-        file_name: c.angle,
         duration_sec: Math.round(durations[i]),
+        detected_action_start_sec: actionStarts[c.angle] ?? 3.0,
       }));
 
       const systemPrompt = `You are an expert film director and editor AI.
@@ -1097,22 +1173,25 @@ Analyze the provided clips from a single scene and return ONLY a valid JSON obje
 
       const userMsg = `Scene ${activeScene + 1} has ${clips.length} clips: ${JSON.stringify(clipInfo, null, 2)}
 
+The "detected_action_start_sec" field is the EXACT moment the actor starts performing (detected visually from the frames).
+Use it as trim_start_sec — do NOT use an earlier value.
+
 Return this exact JSON structure:
 {
   "selected_clips": [
-    {"angle":"זווית 1","trim_start_sec":3.0,"trim_end_sec":null,"order":1,"reason":"...","transition":"cut"}
+    {"angle":"זווית 1","trim_start_sec":3.5,"trim_end_sec":null,"order":1,"reason":"...","transition":"cut"}
   ],
   "rejected_clips": [{"angle":"זווית 3","reason":"..."}],
   "summary": "תיאור קצר בעברית של תוכנית העריכה",
   "director_note": "הערת במאי בעברית"
 }
 
-Rules (important):
-- trim_start_sec: skip slate/clapperboard — usually 2-5 seconds from start
-- Select the best shots: wide → medium → close-up order is cinematic
+Rules:
+- trim_start_sec = detected_action_start_sec (exact — never guess)
+- Select best shots: wide → medium → close-up is cinematic
 - Reject blurry, shaky, over/underexposed, or duplicate shots
-- trim_end_sec: null means use until end of clip, or set a specific cut point
-- transition: "cut" for fast scenes, "dissolve" for emotional moments
+- trim_end_sec: null means to end of clip; set only if there is dead time at the end
+- transition: "cut" for action, "dissolve" for emotional
 - Reply summary and director_note in Hebrew`;
 
       const raw = await callClaude(systemPrompt, [{ role: "user", content: userMsg }], 2000);
