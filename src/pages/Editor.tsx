@@ -5,7 +5,7 @@ import TrimEditor from "@/components/editor/TrimEditor";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/localDb";
-import { saveVideoBlob, getVideoBlob, deleteVideoBlob, isIndexedDBKey } from "@/lib/videoDB";
+import { saveVideoBlob, getVideoBlob, deleteVideoBlob, isIndexedDBKey, isFSAKey, saveFileHandle, getFileHandle, deleteFileHandle } from "@/lib/videoDB";
 
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string;
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -253,6 +253,7 @@ const Editor = () => {
   const [sceneCutPlans, setSceneCutPlans] = useState<Record<number, CutPoint[]>>({});
   const [sceneOrder, setSceneOrder] = useState<number[]>([]);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [pendingFSA, setPendingFSA] = useState<Array<{ fsaKey: string; sceneIndex: number; angleLabel: string; videoId?: string; fileName: string }>>([]);
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -373,12 +374,25 @@ const Editor = () => {
       const videos = db.sceneVideos.getByScenes(scenesData.map(s => s.id));
       if (videos.length > 0) {
         const videoMap: Record<number, SceneVideo[]> = {};
+        const fsaWaiting: typeof pendingFSA = [];
         await Promise.all(videos.map(async (v) => {
           const sceneIndex = scenesData.findIndex(s => s.id === v.scene_id);
           if (sceneIndex < 0) return;
           let url: string | null = null;
           if (isIndexedDBKey(v.file_url)) {
             url = await getVideoBlob(v.file_url);
+          } else if (isFSAKey(v.file_url)) {
+            const handle = await getFileHandle(v.file_url);
+            if (handle) {
+              try {
+                const perm = await (handle as any).queryPermission({ mode: "read" });
+                if (perm === "granted") {
+                  url = URL.createObjectURL(await handle.getFile());
+                } else {
+                  fsaWaiting.push({ fsaKey: v.file_url, sceneIndex, angleLabel: v.angle_label || "זווית ?", videoId: v.id, fileName: v.file_name || "" });
+                }
+              } catch { /* drive disconnected */ }
+            }
           } else if (v.file_url.startsWith("blob:")) {
             url = v.file_url;
           }
@@ -394,6 +408,7 @@ const Editor = () => {
           videoMap[+k].sort((a, b) => a.angle.localeCompare(b.angle));
         });
         setSceneVideos(videoMap);
+        if (fsaWaiting.length > 0) setPendingFSA(fsaWaiting);
       }
       setSceneOrder(Array.from({ length: scenesData.length }, (_, i) => i));
 
@@ -415,43 +430,45 @@ const Editor = () => {
   }
 
   const VIDEO_EXTENSIONS = /\.(mp4|mov|avi|mkv|mts|m2ts|mxf|webm|wmv|flv|3gp)$/i;
-  const LARGE_FILE_THRESHOLD = 500 * 1024 * 1024; // 500 MB
 
-  const addVideoFiles = async (sceneIndex: number, files: File[]) => {
-    if (!scenes[sceneIndex] || files.length === 0) return;
+  const addVideoFiles = async (sceneIndex: number, items: { file: File; handle?: FileSystemFileHandle }[]) => {
+    if (!scenes[sceneIndex] || items.length === 0) return;
     setUploadingScene(sceneIndex);
     const sceneId = scenes[sceneIndex].id;
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+      for (let i = 0; i < items.length; i++) {
+        const { file, handle } = items[i];
         if (!file.type.startsWith("video/") && !VIDEO_EXTENSIONS.test(file.name)) {
           toast.error(`הקובץ "${file.name}" אינו קובץ וידאו`);
           continue;
         }
         const angleLabel = `זווית ${(sceneVideos[sceneIndex]?.length || 0) + i + 1}`;
         const blobUrl = URL.createObjectURL(file);
-        const isLarge = file.size > LARGE_FILE_THRESHOLD;
-        const idbKey = `idb:${sceneId}:${Date.now()}_${i}`;
+        const hasFSA = !!handle;
+        const key = hasFSA ? `fsa:${sceneId}:${Date.now()}_${i}` : `idb:${sceneId}:${Date.now()}_${i}`;
         const videoRecord = db.sceneVideos.insert({
           scene_id: sceneId,
           file_name: file.name,
-          file_url: isLarge ? `blob-tmp:${file.name}` : idbKey,
+          file_url: key,
           angle_label: angleLabel,
         });
         setSceneVideos(prev => ({
           ...prev,
           [sceneIndex]: [...(prev[sceneIndex] || []), { id: videoRecord.id, url: blobUrl, angle: angleLabel }],
         }));
-        if (isLarge) {
-          toast.info(`📁 "${file.name}" — קובץ גדול, זמין לעריכה כעת. לא ישמר לאחר רענון.`);
+        if (hasFSA) {
+          const savingToastId = toast.loading(`שומר מצביע ל-"${file.name}"...`);
+          saveFileHandle(key, handle!)
+            .then(() => toast.success(`✅ "${file.name}" — ישמר אוטומטית בפתיחה הבאה`, { id: savingToastId }))
+            .catch(() => toast.warning(`⚠️ "${file.name}" — לא ישמר לאחר רענון`, { id: savingToastId }));
         } else {
           const savingToastId = toast.loading(`שומר "${file.name}"...`);
-          saveVideoBlob(idbKey, file)
+          saveVideoBlob(key, file)
             .then(() => toast.success(`✅ "${file.name}" נשמר!`, { id: savingToastId }))
             .catch(() => toast.warning(`⚠️ "${file.name}" — לא נשמר לאחר רענון`, { id: savingToastId }));
         }
       }
-      toast.success(`${files.length} סרטון${files.length > 1 ? "ים" : ""} נטענ${files.length > 1 ? "ו" : ""} — ניתן לערוך מיד!`);
+      toast.success(`${items.length} סרטון${items.length > 1 ? "ים" : ""} נטענ${items.length > 1 ? "ו" : ""} — ניתן לערוך מיד!`);
     } catch (error: any) {
       toast.error(error.message || "שגיאה בטעינת הסרטון");
     } finally {
@@ -461,17 +478,17 @@ const Editor = () => {
 
   const handleFileUpload = async (sceneIndex: number, files: FileList | null) => {
     if (!files) return;
-    await addVideoFiles(sceneIndex, Array.from(files));
+    await addVideoFiles(sceneIndex, Array.from(files).map(file => ({ file })));
   };
 
   const pickFilesFromDisk = async (sceneIndex: number) => {
     try {
-      const handles = await (window as any).showOpenFilePicker({
+      const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
         multiple: true,
         types: [{ description: "קבצי וידאו", accept: { "video/*": [".mp4", ".mov", ".avi", ".mkv", ".mts", ".m2ts", ".mxf", ".webm"] } }],
       });
-      const files: File[] = await Promise.all(handles.map((h: any) => h.getFile()));
-      await addVideoFiles(sceneIndex, files);
+      const items = await Promise.all(handles.map(async h => ({ file: await h.getFile(), handle: h })));
+      await addVideoFiles(sceneIndex, items);
     } catch (err: any) {
       if (err?.name !== "AbortError") toast.error("שגיאה בפתיחת הקבצים");
     }
@@ -480,18 +497,40 @@ const Editor = () => {
   const pickFolderFromDisk = async (sceneIndex: number) => {
     try {
       const dirHandle = await (window as any).showDirectoryPicker({ mode: "read" });
-      const files: File[] = [];
+      const fileHandles: FileSystemFileHandle[] = [];
       for await (const [name, handle] of (dirHandle as any).entries()) {
-        if (handle.kind === "file" && (VIDEO_EXTENSIONS.test(name))) {
-          files.push(await (handle as any).getFile());
-        }
+        if (handle.kind === "file" && VIDEO_EXTENSIONS.test(name)) fileHandles.push(handle as FileSystemFileHandle);
       }
-      if (files.length === 0) { toast.error("לא נמצאו קבצי וידאו בתיקיה"); return; }
-      files.sort((a, b) => a.name.localeCompare(b.name));
-      await addVideoFiles(sceneIndex, files);
+      if (fileHandles.length === 0) { toast.error("לא נמצאו קבצי וידאו בתיקיה"); return; }
+      const items = await Promise.all(fileHandles.map(async h => ({ file: await h.getFile(), handle: h })));
+      items.sort((a, b) => a.file.name.localeCompare(b.file.name));
+      await addVideoFiles(sceneIndex, items);
     } catch (err: any) {
       if (err?.name !== "AbortError") toast.error("שגיאה בפתיחת התיקיה");
     }
+  };
+
+  const reconnectDrive = async () => {
+    const remaining: typeof pendingFSA = [];
+    for (const item of pendingFSA) {
+      const handle = await getFileHandle(item.fsaKey);
+      if (!handle) { remaining.push(item); continue; }
+      try {
+        const perm = await (handle as any).requestPermission({ mode: "read" });
+        if (perm === "granted") {
+          const url = URL.createObjectURL(await handle.getFile());
+          setSceneVideos(prev => ({
+            ...prev,
+            [item.sceneIndex]: [...(prev[item.sceneIndex] || []), { id: item.videoId, url, angle: item.angleLabel }],
+          }));
+        } else {
+          remaining.push(item);
+        }
+      } catch { remaining.push(item); }
+    }
+    setPendingFSA(remaining);
+    if (remaining.length < pendingFSA.length) toast.success("סרטונים מהכונן נטענו בהצלחה!");
+    else toast.error("לא ניתן היה לגשת לכונן");
   };
 
   const hasFSA = typeof (window as any).showOpenFilePicker === "function";
@@ -505,6 +544,7 @@ const Editor = () => {
       const record = (sceneId ? db.sceneVideos.getByScene(sceneId) : []).find(v => v.id === video.id)
         || db.sceneVideos.getByScenes(scenes.map(s => s.id)).find(v => v.id === video.id);
       if (record && isIndexedDBKey(record.file_url)) await deleteVideoBlob(record.file_url);
+      if (record && isFSAKey(record.file_url)) await deleteFileHandle(record.file_url);
       db.sceneVideos.delete(video.id);
     }
     if (video.url.startsWith("blob:")) URL.revokeObjectURL(video.url);
@@ -1028,6 +1068,18 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
                   <p className="text-sm text-muted-foreground">לחץ על סצנה כדי לפתוח ולערוך. שמור כל סצנה לפני מיזוג.</p>
                 </div>
               </div>
+              {pendingFSA.length > 0 && (
+                <div className="mx-6 mt-4 px-4 py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center gap-3">
+                  <span className="text-lg">🔌</span>
+                  <div className="flex-1 text-sm">
+                    <span className="font-semibold text-yellow-400">{pendingFSA.length} סרטון{pendingFSA.length > 1 ? "ים" : ""} על כונן חיצוני</span>
+                    <span className="text-muted-foreground mr-2">— חבר את הכונן ולחץ להטעין</span>
+                  </div>
+                  <Button size="sm" variant="outline" className="border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/10 shrink-0" onClick={reconnectDrive}>
+                    חבר כונן
+                  </Button>
+                </div>
+              )}
               <div className="flex-1 overflow-auto p-6">
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {orderedScenesWithVideos.map((scene) => {
