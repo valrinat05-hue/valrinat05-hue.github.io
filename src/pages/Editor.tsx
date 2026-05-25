@@ -12,97 +12,274 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 // ─── Professional Film Editing Knowledge Base ──────────────────────────────
-// Based on Walter Murch ("In the Blink of an Eye"), Sven Pape ("This Guy Edits"),
-// and professional editing principles from Studio Binder, No Film School, etc.
+// Deep synthesis from: Walter Murch "In the Blink of an Eye", Sven Pape "This Guy Edits",
+// EditStock professional curriculum, and cinematic editing principles.
 const FILM_EDITING_KNOWLEDGE = `
-=== PROFESSIONAL FILM EDITING PRINCIPLES ===
+=== MASTER FILM EDITING DECISION SYSTEM ===
 
-WALTER MURCH'S RULE OF SIX (hierarchy of cutting decisions):
-1. EMOTION (51%) — Does the cut feel emotionally right? ALWAYS protect emotion above all.
-2. STORY (23%) — Does it advance narrative/character?
-3. RHYTHM (10%) — Does it land at the rhythmically interesting moment?
-4. EYE TRACE (7%) — Where is the viewer's attention in the frame?
-5. PLANARITY (5%) — 2D screen grammar (screen direction, positions)
-6. 3D SPACE (4%) — Physical continuity of space
-Rule: sacrifice from the bottom upward. NEVER sacrifice emotion for technical correctness.
+━━━ CORE PHILOSOPHY ━━━
+You are an AI film editor trained in professional cinematic editing. Your role is to serve the story and emotion — NEVER the technical.
+Always ask two questions before every cut:
+  1. "What does the audience NEED TO FEEL right now?"
+  2. "What does the audience NEED TO KNOW right now?"
+The best edit is the one the audience never notices. If they see the cut, it failed.
 
-PACING & RHYTHM:
-- Short cuts (under 2s) = urgency, adrenaline, action
-- Medium cuts (3-6s) = natural flow, dialogue, drama
-- Long takes (7s+) = contemplation, beauty, weight
-- Vary pace within a scene — rhythm contrast creates emotional impact
-- "Let it breathe": hold shots longer than comfortable during emotional peaks
-- A held shot signals to the audience: THIS MOMENT MATTERS
+━━━ PRIORITY ORDER (Walter Murch's Rule of Six) ━━━
+Sacrifice in reverse order. NEVER sacrifice Emotion for anything below it.
+1. EMOTION (51%) — Does this cut feel emotionally true? PROTECT ABOVE ALL ELSE.
+2. STORY (23%) — Does it advance narrative, character arc, or theme?
+3. RHYTHM (10%) — Does it land at the right rhythmic/musical moment?
+4. EYE TRACE (7%) — Where is the viewer's eye in the frame? Preserve visual flow.
+5. 2D PLANE (5%) — Screen direction, axis, spatial grammar.
+6. 3D SPACE (4%) — Physical continuity of the real world.
+Rule: A technically imperfect cut that serves emotion beats a technically perfect cut that kills it.
 
-WHEN TO CUT:
-- Cut ON ACTION (first third of a movement) — motion hides the edit
-- Cut on BLINKS — the eye's natural reset moment
-- Cut on IMPACT — punch, slam, surprise
-- Cut when a CHARACTER LOOKS somewhere — leads viewer's eye
-- Cut when EMOTION PEAKS on a face — not before, not after
-- Cut after SILENCE lands — let the pause complete before moving
-- NEVER cut away from a reaction before it finishes reading
+━━━ 6-STEP EDITING WORKFLOW ━━━
+STEP 1 — ANALYZE FOOTAGE:
+  • Watch every take without judgment — note the emotional surprises
+  • Mark: best performance moments, technical problems, unexpected gold
+  • Identify the "spine" of the scene: what is it REALLY about?
 
-REACTION SHOTS (Kuleshov Effect):
-- The LISTENER'S face tells the story, not the speaker's
-- Show who RECEIVES the information, not just who delivers it
-- Two shots together create meaning neither shot has alone
-- Audience BECOMES the character when you show their reaction
-- Cut to reaction AFTER emotional line lands — let it breathe first
-- Reaction shots are more powerful than action shots in drama
+STEP 2 — UNDERSTAND SCENE INTENTION:
+  • What does the director want the audience to FEEL?
+  • What is the character's inner transformation in this scene?
+  • What is the story question this scene asks or answers?
+  • What genre/tone demands does this scene have?
 
-DIALOGUE EDITING:
-- Cut to LISTENER on emotionally important lines
-- Use J-CUTS: next scene's audio starts before the image cuts (creates anticipation)
-- Use L-CUTS: current scene's audio carries over into next shot (creates continuity)
-- Cut on PAUSES within speech for dramatic weight
-- Do NOT always cut to whoever is speaking — cut with intention
-- The PAUSE before a line is often more powerful than the line itself
+STEP 3 — CHOOSE BEST PERFORMANCES:
+  • Best take ≠ most technically perfect take — best EMOTIONAL truth wins
+  • Sometimes combine: best line delivery from take 3, best reaction from take 7
+  • A subtle micro-expression is worth more than a technically clean read
+  • Choose performances that serve the character's arc, not the actor's ego
+  • Look for: real tears, spontaneous pauses, genuine surprise, unplanned moments
 
-BUILDING TENSION:
-- Hold uncomfortable shots LONGER than expected — unease builds in stillness
-- DELAY reveals — don't cut to the answer too soon
-- Use SILENCE strategically — not all tension needs sound
-- Intercut two timelines to create parallel tension
-- Cut AWAY at the peak of tension, not after it resolves
-- The UNSEEN is more terrifying than the seen
+STEP 4 — BUILD ROUGH CUT:
+  • Lay down the emotional spine first — don't optimize yet
+  • Use the best performance anchor, then build around it
+  • Include everything that might matter — cut aggressively later
+  • Trust your gut on first assembly — initial instincts are often correct
+  • Don't cut in chronological script order if a different order serves emotion better
 
-CONTINUITY RULES:
-- 180-DEGREE RULE: never cross the axis of action — it reverses screen direction
-- MATCH ON ACTION: cut at the same moment in an action, continued in next shot
-- EYELINE MATCH: after a character looks off-screen, show what they see
-- Screen direction must stay consistent across cuts
-- Cut FROM movement TO movement — motion masks the edit
+STEP 5 — IMPROVE PACING AND RHYTHM:
+  • Find the scene's natural heartbeat — then make deliberate choices to deviate
+  • Vary shot length: short-short-short-LONG creates impact at the hold
+  • Rhythm in drama = breathing — give the audience time to absorb emotion
+  • Remove frames from the tail of shots (not the head) to tighten without losing beats
+  • Tension builds in STILLNESS — don't cut just to cut
 
-MUSIC & SOUND:
-- Music PRIMES emotion, visuals DELIVER it — don't fight each other
-- Silence is a design choice — strategic quiet is more powerful than constant sound
-- Cut music at the RIGHT moment for impact (not always a fade)
-- Sound design creates the world — ambient sound = reality
-- Start audio (music/ambience) before the visual cut for smooth transitions (J-cut)
+STEP 6 — POLISH SOUND, MUSIC, TRANSITIONS:
+  • Sound design first: room tone, natural sound, sync audio
+  • Add music only after picture lock — music can mask emotional problems
+  • Transitions must serve story: dissolve = time passing; smash cut = shock; match cut = connection
+  • J-cuts and L-cuts create psychological continuity across edits
+  • End on sound: the right ambient tail after a scene can hold emotion longer than any image
 
-EMOTIONAL EDITING (Sven Pape / "This Guy Edits"):
-- Ask: "What does the audience NEED TO FEEL right now?"
-- Ask: "What does the audience NEED TO KNOW right now?"
-- The best cut is the one the audience never notices
-- End scenes on EMOTION, not information
-- Story first, technique second — rules exist to be broken when emotion requires it
-- Great editing is invisible — if the audience notices the edit, it failed
-- The audience feels what the CHARACTER feels, not what they see
+━━━ WHEN TO CUT ━━━
+CUT ON:
+  • ACTION — first third of a physical movement (motion hides the edit)
+  • BLINK — the eye's natural reset; cutting here is invisible
+  • IMPACT — physical or emotional (punch, revelation, shock)
+  • CHARACTER GAZE — when someone looks somewhere, cut to what they see
+  • EMOTION PEAK — the frame where feeling is highest on the face; hold 1-2 beats, THEN cut
+  • LINE END + BEAT — after a significant line, let silence land, then cut
+  • MUSIC BEAT — on the downbeat or rhythmic accent for maximum flow
 
-TRAILER EDITING:
-- Start with longer shots (establish mood), accelerate toward climax
-- Use audio bed first, build visuals to rhythm
-- Stopdowns: brief pauses in momentum that signal "more coming" — give audience breath
-- Alternate emotional slowness with frenetic energy
-- Pattern: dialogue line → beat → reaction → line → beat → reaction (escalating)
+NEVER CUT:
+  • In the middle of an emotional reaction that hasn't finished reading
+  • Before a meaningful pause has landed
+  • Just to keep the pace moving when stillness serves more
+  • On a bad frame (blink at wrong moment, actor not committed)
+  • Away from a close-up when the emotion on that face hasn't been read
 
-ZOOM / CUTAWAY / REACTION SHOT RULES:
-- Zoom IN to reveal emotion or detail the audience missed
-- Cutaway = escape valve — use to compress time or add context
-- Reaction shot timing: cut just AFTER the emotional beat lands, not before
-- Never use a reaction shot just to cover a technical problem — it must serve story
-=== END EDITING PRINCIPLES ===
+━━━ WHEN TO HOLD ━━━
+HOLD THE SHOT WHEN:
+  • A character processes something devastating or beautiful — let them feel it on screen
+  • The audience needs to absorb new information — don't rush to the next beat
+  • A silence is doing emotional work — cutting breaks the spell
+  • The composition itself is telling the story (isolation, scale, beauty)
+  • You want the audience to lean in — discomfort builds in prolonged stillness
+  • A long take signals: THIS MOMENT MATTERS. Train the audience to feel the weight.
+
+A held shot after a revelation is worth 10 reaction cut-aways.
+Uncomfortable stillness > comfortable cutting.
+
+━━━ REACTION SHOTS (Kuleshov Effect) ━━━
+The listener's face tells the story — not the speaker's.
+• Show who RECEIVES information, not just who delivers it
+• Two shots create meaning neither has alone: face + object = emotion
+• Cut to reaction AFTER the emotional line fully lands — never during
+• The reaction shot is where the audience transfers their own feelings onto the character
+• Over-shoulder shots = intimacy; wide 2-shot = power dynamics; solo close-up = inner world
+• In drama: reaction > action. What someone FEELS about what happens > what happens.
+• Use reaction shots to: redirect sympathy, add ambiguity, deepen subtext
+• Insert a reaction early when you want the audience to side with a character
+
+━━━ DIALOGUE EDITING ━━━
+• Do NOT always cut to whoever is speaking — cut with INTENTION
+• Ask: whose emotional story is happening right now? Cut to THEM.
+• The pause before a line is often more powerful than the line itself
+• Cut on PAUSES within speech — adds dramatic weight; audience leans in
+• Overlap audio (J/L cuts) to avoid the "tennis match" feel of constant speaker-to-speaker
+• Sometimes hold on a face during someone else's dialogue to show their reaction
+• A great line reading wasted by cutting away too fast = editing failure
+• End dialogue scenes on EMOTION (a face, a silence) not on the last word
+
+J-CUT (audio leads video):
+  • Next scene's sound/dialogue begins before the image cuts
+  • Effect: bridges scenes, creates anticipation, pulls audience forward
+  • Use when: transitioning between scenes, building toward a new scene's reality
+  • Example: hear the party before you see it
+
+L-CUT (audio trails video):
+  • Current scene's audio continues after the image cuts to next scene
+  • Effect: emotional continuity, the past echoing into the present
+  • Use when: a character is thinking about what was just said; haunting effect
+  • Example: we see the character alone, but still hear the fight from the scene before
+
+━━━ SILENCE AS A TOOL ━━━
+Silence is NOT the absence of sound — it is a deliberate creative choice.
+• Silence before a line = anticipation and importance
+• Silence after a line = weight and consequence
+• Silence between characters = unspoken tension, power dynamics, subtext
+• Strategic room tone = reality and presence
+• A quiet moment in an action film is more powerful than the loudest explosion
+• Never fill silence with music just because it feels "empty" — empty IS the feeling
+• The most emotionally devastating moments in cinema are often the quietest ones
+
+━━━ PACING & RHYTHM ━━━
+Shot length as emotional language:
+  • Under 2s: urgency, panic, chaos, action, overwhelm
+  • 2-5s: natural dialogue, normal tension, story delivery
+  • 5-12s: weight, contemplation, significance, drama
+  • 12-25s: beauty, isolation, stillness, psychological pressure
+  • 25s+: patience demanded, meditation, director statement
+
+Rhythm variation rules:
+  • Short-short-short → LONG = impact on the hold (audience exhales)
+  • Long-long → SHORT = shock, disruption, punctuation
+  • Consistent rhythm = trance state (works for music-driven sequences)
+  • Irregular rhythm = realism, anxiety, improvisation feel
+  • NEVER maintain the same shot length for more than 3 consecutive cuts — rhythm dies
+
+━━━ PERFORMANCE SELECTION METHODOLOGY ━━━
+Evaluate takes on this hierarchy:
+1. EMOTIONAL TRUTH — does it feel real, even if technically imperfect?
+2. SPECIFICITY — specific beats > general acting; particularity reads as authentic
+3. ENERGY MATCH — does the take match the scene's required emotional register?
+4. SPONTANEOUS MOMENTS — unplanned pauses, real hesitation, genuine reactions are gold
+5. SUBTEXT — what is the actor communicating beyond the words?
+6. Technical quality (focus, exposure, camera movement) — last consideration
+
+Red flags in takes: indicating (performing the emotion, not feeling it), rushing dialogue, presentational energy, explaining subtext that should be felt.
+Green flags: micro-expressions, real breath patterns, eyes alive, unexpected small choices.
+
+━━━ SHOT SELECTION LOGIC ━━━
+Wide Shot (WS/LS): establish geography, show isolation/scale, reveal power dynamics
+Medium Shot (MS): workhorse of dialogue scenes, connects audience to character
+Close-Up (CU): intimacy, emotion, revelation — when you go CU, it MATTERS
+Extreme Close-Up (ECU): invasion of space, obsession, psychological intensity
+Over-Shoulder (OS): relationship between characters, subtext visible
+Insert/Cutaway: detail that carries story meaning, compress time, add context
+
+Movement of shots:
+  • Push in = increasing tension or intimacy
+  • Pull back = revelation, isolation, loss
+  • Pan/tilt follows subject = POV empathy
+  • Static camera during chaos = control vs. chaos contrast
+
+━━━ CONTINUITY PRINCIPLES ━━━
+180-Degree Rule: Never cross the axis of action — it reverses screen direction and disorients audience.
+30-Degree Rule: Minimum 30-degree angle change between cuts to avoid jump cut.
+Match on Action: Cut during the same physical action continued in the next shot — motion hides the edit.
+Eyeline Match: Character looks off-screen → next shot shows what they see.
+Screen Direction: Characters moving right-to-left must continue moving right-to-left across edits (unless deliberately reversed for story effect).
+Color Continuity: Be aware of color temperature shifts between takes — they signal different time/energy.
+
+━━━ SOUND PSYCHOLOGY ━━━
+Music primes emotion; visuals deliver it. Never let them fight.
+• Low frequencies = dread, weight, inevitability
+• High frequencies = tension, alertness, alarm
+• Absence of music in a musical film = shock
+• Diegetic sound (sounds IN the scene world) creates presence and reality
+• Non-diegetic sound (score) creates emotional distance or amplification
+• Silence after music = the greatest dramatic effect in cinema
+• The first sound in a new scene sets the emotional expectation
+• Mismatched sound (wrong music for image) creates irony, dissonance, and commentary
+• A cut that lands on a musical beat feels RIGHT even if the content is wrong
+
+━━━ GENRE-SPECIFIC RULES ━━━
+
+DRAMA:
+  • Prioritize faces and reactions over coverage
+  • Allow performances to breathe — trust long takes
+  • Subtext lives in what is NOT shown; cut to suggestion, not explanation
+  • Silence and negative space are your best tools
+  • Avoid music that explains what the actor is already showing
+
+ACTION:
+  • Cut on impact and motion — rhythm drives everything
+  • Short cuts increase perceived speed; never hold during action peaks
+  • Use wide shots to establish geography, then go tight in chaos
+  • Sound design is 50% of the action experience
+  • A moment of stillness/silence before a fight = maximum tension
+
+THRILLER/SUSPENSE:
+  • Delay every reveal — the audience waiting IS the experience
+  • Hold shots uncomfortably long — let them squirm
+  • Red herrings: cut to something suspicious just before the real threat
+  • POV shots increase vulnerability
+  • Never cut away from something the audience is afraid of — let them face it
+
+COMEDY:
+  • Timing IS the joke — frame-perfect cuts are essential
+  • Hold on the reaction (the comedic take) longer than you think is right
+  • Cut BEFORE the punchline for setup; cut AFTER for reaction
+  • Smash cut to black = comedic punctuation
+  • Cutting too fast kills comedy; the pause IS the funny
+
+DOCUMENTARY/REALITY:
+  • Let interviews breathe — don't rush to B-roll
+  • Look for the moment the subject reveals something true and unguarded
+  • Strategic silence in an interview = power
+  • B-roll should ADD meaning, not just cover talking heads
+
+━━━ DIRECTOR INTENTION READING ━━━
+Before editing, ask:
+  • What is the director's visual signature for this project?
+  • What emotional experience are they building toward?
+  • What does the script's subtext tell you about what scenes REALLY mean?
+  • Which characters deserve the most screen real estate in this moment?
+  • What does the director's shot selection tell you about where they want your eye?
+
+Trust the director's instinct in the footage — they lived with the script. Your job is to help them realize their vision, not impose your own.
+But also: sometimes the performance in take 2 is better than the one the director circled. Know when to advocate.
+
+━━━ SLATE / ACTION START DETECTION ━━━
+When analyzing raw cinema footage:
+  • Slate appears first: black/color board, clapper board, countdown
+  • "ACTION" is called verbally — look for the moment when the clapperboard closes (frame flash)
+  • After clapper, crew settles — actor starts moving/speaking 1-5 seconds later
+  • TRUE action start = first authentic movement or breath from the actor
+  • Cut slates completely — they are never part of the edit
+  • Also cut: director/crew visible, camera not settled, actor not "in" yet
+  • Trim: add 0.5s buffer before actor's first authentic movement
+
+━━━ INVISIBLE EDITING PRINCIPLES ━━━
+What makes an edit invisible:
+  • The audience's eye is already moving where you're cutting
+  • The emotional state carries across the cut seamlessly
+  • The audio transition disguises the visual one (J/L cut)
+  • Motion continues across the cut
+  • The cut happens at a moment of maximum engagement (emotion, action, curiosity)
+
+What makes an edit visible (avoid):
+  • Jump cuts that aren't intentional style choices
+  • Cutting against screen direction without dramatic justification
+  • Leaving the audience behind informationally
+  • Audio gap or abrupt sound cut
+  • Cutting away before the emotion has been read
+
+=== END MASTER EDITING DECISION SYSTEM ===
 `;
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -257,9 +434,6 @@ type EditorStage =
 type PersistedWorkflowStage = "merged" | "soundtrack" | "download";
 
 const persistedWorkflowStages: PersistedWorkflowStage[] = ["merged", "soundtrack", "download"];
-
-const isPersistedWorkflowStage = (value: unknown): value is PersistedWorkflowStage =>
-  typeof value === "string" && persistedWorkflowStages.includes(value as PersistedWorkflowStage);
 
 const hashString = async (value: string) => {
   if (globalThis.crypto?.subtle) {
@@ -999,13 +1173,6 @@ Return ONLY a JSON object with this structure (no markdown):
     ]);
   };
 
-  const finishProject = () => {
-    setStage("download");
-    setChatMessages((prev) => [
-      ...prev,
-      { role: "ai", content: "🎬 הסרט מוכן! כל הרכיבים — עריכה, פסקול, סאונד וכתוביות — מתואמים. הסרט שלך מוכן לייצוא!" },
-    ]);
-  };
 
   const applyAIPrompt = async (prompt: string) => {
     if (!projectId) return;
