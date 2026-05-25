@@ -1565,10 +1565,13 @@ Rules:
                   <ChevronLeft className="h-4 w-4" />
                   חזרה
                 </Button>
-                <div>
+                <div className="flex-1">
                   <h2 className="text-lg font-bold text-foreground">{project.name} — סצנות</h2>
                   <p className="text-sm text-muted-foreground">לחץ על סצנה כדי לפתוח ולערוך. שמור כל סצנה לפני מיזוג.</p>
                 </div>
+                <Button variant="outline" size="sm" onClick={() => setShowApiKeyModal(true)} className="gap-1 shrink-0">
+                  🔑 מפתח AI
+                </Button>
               </div>
               {pendingFSA.length > 0 && (
                 <div className="mx-6 mt-4 px-4 py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/30 flex items-center gap-3">
