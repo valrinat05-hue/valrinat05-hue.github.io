@@ -318,6 +318,7 @@ function parseJsonResponse(text: string): any {
 }
 import Header from "@/components/Header";
 import ManualEditingPanel, { ColorAdjustments, defaultAdjustments, adjustmentsToCssFilter } from "@/components/editor/ManualEditingPanel";
+import AIChatPanel from "@/components/editor/AIChatPanel";
 import EditingStylePicker, { EditingStyle } from "@/components/editor/EditingStylePicker";
 import { CutPoint } from "@/components/editor/MultiCamView";
 import { Button } from "@/components/ui/button";
@@ -542,6 +543,24 @@ const Editor = () => {
   const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem("anthropic_api_key") || "");
   const [clipAnalysisStatus, setClipAnalysisStatus] = useState<Record<string, "pending" | "analyzing" | "selected" | "rejected">>({});
   const [aiAnalyzingClip, setAiAnalyzingClip] = useState<string | null>(null);
+
+  const handleSendMessage = useCallback(async (msg: string) => {
+    setChatMessages((prev) => [...prev, { role: "user", content: msg }]);
+    try {
+      const history = chatMessages
+        .filter((m) => m.role === "user" || m.role === "ai")
+        .slice(-10)
+        .map((m) => ({ role: (m.role === "ai" ? "assistant" : "user") as "user" | "assistant", content: m.content }));
+      const reply = await callClaude(FILM_EDITING_KNOWLEDGE, [...history, { role: "user", content: msg }], 800);
+      setChatMessages((prev) => [...prev, { role: "ai", content: reply }]);
+    } catch {
+      setChatMessages((prev) => [...prev, { role: "ai", content: "❌ שגיאת תקשורת עם AI. בדוק מפתח API." }]);
+    }
+  }, [chatMessages]);
+
+  const handleQuickAction = useCallback((label: string) => {
+    void handleSendMessage(label);
+  }, [handleSendMessage]);
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -2471,6 +2490,16 @@ Rules:
           )}
         </div>
 
+        {/* RIGHT — AI Chat Panel */}
+        <AIChatPanel
+          messages={chatMessages}
+          onSendMessage={handleSendMessage}
+          onQuickAction={handleQuickAction}
+          activeScene={activeScene}
+          stage={stage}
+          videoCount={Object.values(sceneVideos).reduce((n, arr) => n + arr.length, 0)}
+          onApplyAICut={() => startMerge()}
+        />
       </div>
     </div>
   );
