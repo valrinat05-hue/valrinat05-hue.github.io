@@ -7,9 +7,12 @@ import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/localDb";
 import { saveVideoBlob, getVideoBlob, deleteVideoBlob, isIndexedDBKey, isFSAKey, saveFileHandle, getFileHandle, deleteFileHandle } from "@/lib/videoDB";
 
-const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string;
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
+
+function getAnthropicKey(): string {
+  return localStorage.getItem("anthropic_api_key") || (import.meta.env.VITE_ANTHROPIC_API_KEY as string) || "";
+}
 
 // ─── Professional Film Editing Knowledge Base ──────────────────────────────
 // Deep synthesis from: Walter Murch "In the Blink of an Eye", Sven Pape "This Guy Edits",
@@ -293,7 +296,7 @@ async function callClaude(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
+      "x-api-key": getAnthropicKey(),
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
@@ -542,6 +545,8 @@ const Editor = () => {
   const [sceneOrder, setSceneOrder] = useState<number[]>([]);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [pendingFSA, setPendingFSA] = useState<Array<{ fsaKey: string; sceneIndex: number; angleLabel: string; videoId?: string; fileName: string }>>([]);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem("anthropic_api_key") || "");
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -1387,7 +1392,7 @@ Reply with ONLY a single decimal number. Example: 3.5`,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
+            "x-api-key": getAnthropicKey(),
             "anthropic-version": "2023-06-01",
             "anthropic-dangerous-direct-browser-access": "true",
           },
@@ -1518,6 +1523,32 @@ Rules:
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <Header />
+
+      {/* ── API Key Modal ── */}
+      {showApiKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-card border rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h2 className="text-lg font-bold mb-1">מפתח Anthropic API</h2>
+            <p className="text-sm text-muted-foreground mb-4">נדרש להפעלת AI במאי. המפתח נשמר בדפדפן בלבד.</p>
+            <input
+              type="password"
+              placeholder="sk-ant-api03-..."
+              value={apiKeyInput}
+              onChange={e => setApiKeyInput(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2 text-sm bg-background mb-4 font-mono"
+            />
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setShowApiKeyModal(false)}>ביטול</Button>
+              <Button onClick={() => {
+                localStorage.setItem("anthropic_api_key", apiKeyInput.trim());
+                setShowApiKeyModal(false);
+                toast.success("מפתח נשמר!");
+              }}>שמור</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         {/* LEFT — Manual Editing Panel (only in scene editing) */}
         {stage === "editing" && (
@@ -2444,7 +2475,14 @@ Rules:
         {stage !== "scene-list" && (
           <div className="w-80 shrink-0 border-l border-border flex flex-col bg-card overflow-hidden">
             {/* Tab bar */}
-            <div className="flex border-b border-border shrink-0">
+            <div className="flex border-b border-border shrink-0 items-center">
+              <button
+                onClick={() => setShowApiKeyModal(true)}
+                title="הגדר מפתח AI"
+                className="px-2 py-2 text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              >
+                🔑
+              </button>
               {([ ["ai", "🤖 AI"], ["transitions", "🎞️ מעברים"], ["pacing", "📊 קצב"], ["arc", "📖 עלילה"] ] as const).map(([tab, label]) => (
                 <button
                   key={tab}
