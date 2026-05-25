@@ -318,11 +318,7 @@ function parseJsonResponse(text: string): any {
 }
 import Header from "@/components/Header";
 import ManualEditingPanel, { ColorAdjustments, defaultAdjustments, adjustmentsToCssFilter } from "@/components/editor/ManualEditingPanel";
-import AIChatPanel from "@/components/editor/AIChatPanel";
 import EditingStylePicker, { EditingStyle } from "@/components/editor/EditingStylePicker";
-import TransitionsPanel, { TransitionType } from "@/components/editor/TransitionsPanel";
-import PacingPanel from "@/components/editor/PacingPanel";
-import StoryArcPanel from "@/components/editor/StoryArcPanel";
 import { CutPoint } from "@/components/editor/MultiCamView";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -436,7 +432,6 @@ type EditorStage =
 
 type PersistedWorkflowStage = "merged" | "soundtrack" | "download";
 
-const persistedWorkflowStages: PersistedWorkflowStage[] = ["merged", "soundtrack", "download"];
 
 const hashString = async (value: string) => {
   if (globalThis.crypto?.subtle) {
@@ -530,10 +525,8 @@ const Editor = () => {
   const [projectInstructions, setProjectInstructions] = useState<ProjectEditInstructions>({});
   const [currentMergeSignature, setCurrentMergeSignature] = useState<string | null>(null);
   const [savedMergeSignature, setSavedMergeSignature] = useState<string | null>(null);
-  const [sceneTransitions, setSceneTransitions] = useState<Record<number, TransitionType>>({});
-  const [sceneDurations, setSceneDurations] = useState<Record<number, number>>({});
+  const [sceneTransitions, setSceneTransitions] = useState<Record<number, string>>({});
   const [clipDurations, setClipDurations] = useState<Record<string, number>>({});
-  const [rightTab, setRightTab] = useState<"ai" | "transitions" | "pacing" | "arc">("ai");
   const [sceneAIPlan, setSceneAIPlan] = useState<Record<number, SceneDirectorPlan>>({});
   const [sceneMergedVideos, setSceneMergedVideos] = useState<Record<number, string>>({});
   const [isSceneDirecting, setIsSceneDirecting] = useState(false);
@@ -547,6 +540,8 @@ const Editor = () => {
   const [pendingFSA, setPendingFSA] = useState<Array<{ fsaKey: string; sceneIndex: number; angleLabel: string; videoId?: string; fileName: string }>>([]);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem("anthropic_api_key") || "");
+  const [clipAnalysisStatus, setClipAnalysisStatus] = useState<Record<string, "pending" | "analyzing" | "selected" | "rejected">>({});
+  const [aiAnalyzingClip, setAiAnalyzingClip] = useState<string | null>(null);
 
   const handleAdjustmentsChange = useCallback((adj: ColorAdjustments) => {
     setColorAdjustments(adj);
@@ -1179,10 +1174,8 @@ Return ONLY a JSON object with this structure (no markdown):
   };
 
 
-  const applyAIPrompt = async (prompt: string) => {
+  const _applyAIPrompt_unused = async (_prompt: string) => {
     if (!projectId) return;
-    setChatMessages((prev) => [...prev, { role: "user", content: prompt }]);
-    setChatMessages((prev) => [...prev, { role: "ai", content: "🤔 חושב על העריכה הטובה ביותר..." }]);
 
     try {
       const history = chatMessages.slice(-8).map((m) => ({
@@ -1323,13 +1316,6 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
     }
   };
 
-  const handleSendMessage = (msg: string) => {
-    void applyAIPrompt(msg);
-  };
-
-  const handleQuickAction = (label: string) => {
-    void applyAIPrompt(label);
-  };
 
   const loadClipDuration = (url: string): Promise<number> =>
     new Promise((resolve) => {
@@ -1342,77 +1328,50 @@ Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed,
 
   const extractFrameBase64 = (videoUrl: string, timeSec: number): Promise<string | null> =>
     new Promise((resolve) => {
+      let done = false;
+      const finish = (val: string | null) => { if (!done) { done = true; resolve(val); } };
+      const timeout = setTimeout(() => finish(null), 8000);
+
       const video = document.createElement("video");
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
-      if (!ctx) { resolve(null); return; }
+      if (!ctx) { clearTimeout(timeout); resolve(null); return; }
       video.muted = true;
       video.playsInline = true;
       video.preload = "auto";
+      video.crossOrigin = "anonymous";
       video.onloadedmetadata = () => {
-        if (timeSec >= video.duration) { resolve(null); return; }
+        if (timeSec >= video.duration) { finish(null); return; }
         video.currentTime = timeSec;
       };
       video.onseeked = () => {
+        clearTimeout(timeout);
         try {
           canvas.width = 320;
           canvas.height = Math.round((320 / (video.videoWidth || 320)) * (video.videoHeight || 180));
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const b64 = canvas.toDataURL("image/jpeg", 0.65).split(",")[1];
-          resolve(b64 || null);
-        } catch { resolve(null); }
+          const b64 = canvas.toDataURL("image/jpeg", 0.6).split(",")[1];
+          finish(b64 || null);
+        } catch { finish(null); }
       };
-      video.onerror = () => resolve(null);
+      video.onerror = () => { clearTimeout(timeout); finish(null); };
       video.src = videoUrl;
       video.load();
     });
 
-  const detectActionStart = async (clips: SceneVideo[]): Promise<Record<string, number>> => {
-    // Sample 5 frames per clip (0.5s – 7s) and ask Claude Vision when the actor starts
-    const sampleTs = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
-    const results: Record<string, number> = {};
 
-    await Promise.all(clips.map(async (clip) => {
-      const frames = (await Promise.all(sampleTs.map(t => extractFrameBase64(clip.url, t)))).filter(Boolean) as string[];
-      if (frames.length < 2) { results[clip.angle] = 3.0; return; }
-
-      const content: any[] = [
-        ...frames.map(data => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
-        {
-          type: "text",
-          text: `These ${frames.length} frames are from the start of a film clip (${sampleTs.slice(0, frames.length).map(t => t + "s").join(", ")}).
-The clip starts with a clapperboard slate. A director says "action" and then the actor begins performing.
-At which timestamp (seconds) does the ACTOR START their performance?
-Reply with ONLY a single decimal number. Example: 3.5`,
-        },
-      ];
-
-      try {
-        const res = await fetch(ANTHROPIC_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": getAnthropicKey(),
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true",
-          },
-          body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 20, messages: [{ role: "user", content }] }),
-        });
-        const data = await res.json();
-        const val = parseFloat(data?.content?.[0]?.text?.trim() ?? "");
-        results[clip.angle] = (isFinite(val) && val >= 0 && val <= 15) ? val : 3.0;
-      } catch { results[clip.angle] = 3.0; }
-    }));
-
-    return results;
-  };
 
   const runSceneAIDirector = async () => {
     const clips = sceneVideos[activeScene] || [];
     if (clips.length === 0) { toast.error("אין קליפים לנתח בסצנה זו"); return; }
+
+    // Reset clip statuses
+    const initial: Record<string, "pending" | "analyzing" | "selected" | "rejected"> = {};
+    clips.forEach(c => { initial[c.angle] = "pending"; });
+    setClipAnalysisStatus(initial);
+
     setIsSceneDirecting(true);
-    setRightTab("ai");
-    setChatMessages(prev => [...prev, { role: "ai", content: `🎬 מנתח ${clips.length} קליפים — מזהה תחילת אקשן בכל קליפ...` }]);
+    setChatMessages(prev => [...prev, { role: "ai", content: `🎬 מנתח ${clips.length} קליפים...` }]);
 
     try {
       // Load durations for all clips
@@ -1424,8 +1383,35 @@ Reply with ONLY a single decimal number. Example: 3.5`,
       durations.forEach((d, i) => { durMap[`${activeScene}_${i}`] = d; });
       setClipDurations(prev => ({ ...prev, ...durMap }));
 
-      // Visual detection: find action start in each clip
-      const actionStarts = await detectActionStart(clips);
+      // Visual detection: find action start in each clip — one by one with status updates
+      const actionStarts: Record<string, number> = {};
+      for (const clip of clips) {
+        setAiAnalyzingClip(clip.angle);
+        setClipAnalysisStatus(prev => ({ ...prev, [clip.angle]: "analyzing" }));
+        try {
+          const sampleTs = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
+          const frames = (await Promise.all(sampleTs.map(t => extractFrameBase64(clip.url, t)))).filter(Boolean) as string[];
+          if (frames.length >= 2) {
+            const content: any[] = [
+              ...frames.map(data => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
+              { type: "text", text: `These ${frames.length} frames are from the start of a film clip (${sampleTs.slice(0, frames.length).map(t => t + "s").join(", ")}).\nThe clip starts with a clapperboard slate. A director says "action" and then the actor begins performing.\nAt which timestamp (seconds) does the ACTOR START their performance?\nReply with ONLY a single decimal number. Example: 3.5` },
+            ];
+            const res = await fetch(ANTHROPIC_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": getAnthropicKey(), "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+              body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 20, messages: [{ role: "user", content }] }),
+            });
+            const data = await res.json();
+            const val = parseFloat(data?.content?.[0]?.text?.trim() ?? "");
+            actionStarts[clip.angle] = (isFinite(val) && val >= 0 && val <= 15) ? val : 3.0;
+          } else {
+            actionStarts[clip.angle] = 3.0;
+          }
+        } catch { actionStarts[clip.angle] = 3.0; }
+        setClipAnalysisStatus(prev => ({ ...prev, [clip.angle]: "pending" }));
+      }
+      setAiAnalyzingClip(null);
+
       const actionList = clips.map(c => `${c.angle}: ${(actionStarts[c.angle] ?? 3).toFixed(1)}s`).join(", ");
       setChatMessages(prev => {
         const msgs = [...prev];
@@ -1470,16 +1456,17 @@ Rules:
       const plan: SceneDirectorPlan = parseJsonResponse(raw);
       setSceneAIPlan(prev => ({ ...prev, [activeScene]: plan }));
 
+      // Update per-clip statuses based on AI decision
+      const newStatuses: Record<string, "pending" | "analyzing" | "selected" | "rejected"> = {};
+      plan.selected_clips?.forEach(c => { newStatuses[c.angle] = "selected"; });
+      plan.rejected_clips?.forEach(c => { newStatuses[c.angle] = "rejected"; });
+      setClipAnalysisStatus(prev => ({ ...prev, ...newStatuses }));
+
       const acceptedCount = plan.selected_clips?.length ?? 0;
       const rejectedCount = plan.rejected_clips?.length ?? 0;
       setChatMessages(prev => [...prev, {
         role: "ai",
-        content: `🎬 **תוכנית עריכה לסצנה ${activeScene + 1}:**\n\n${plan.summary}\n\n✅ נבחרו: **${acceptedCount} קליפים**\n❌ נדחו: **${rejectedCount} קליפים**\n\n📝 _${plan.director_note || ""}_`,
-        actions: [{
-          label: "▶ מזג לסצנה מוכנה",
-          type: "apply" as const,
-          onAction: () => void applySceneAIPlan(plan),
-        }],
+        content: `🎬 **תוכנית עריכה:**\n\n${plan.summary}\n\n✅ נבחרו: **${acceptedCount}**  ❌ נדחו: **${rejectedCount}**\n\n📝 _${plan.director_note || ""}_`,
       }]);
     } catch (err: any) {
       toast.error("שגיאה בניתוח AI: " + err.message);
@@ -2038,7 +2025,6 @@ Rules:
                       onLoadedMetadata={(e) => {
                         const dur = (e.target as HTMLVideoElement).duration;
                         if (dur && isFinite(dur)) {
-                          setSceneDurations(prev => ({ ...prev, [activeScene]: dur }));
                           setClipDurations(prev => ({ ...prev, [`${activeScene}_${activeAngle}`]: dur }));
                         }
                       }}
@@ -2070,28 +2056,93 @@ Rules:
                   </div>
                 </div>
 
-                {/* Multi-Cam View */}
-                {currentVideos.length > 1 && (
-                  <div className="px-4 py-3">
-                    <MultiCamView
-                      videos={currentVideos}
-                      onAngleSelect={(i) => { setActiveAngle(i); setIsPlaying(false); }}
-                      activeAngle={activeAngle}
-                      sceneIndex={activeScene}
-                      onCutPlanReady={(cuts) =>
-                        setSceneCutPlans(prev => ({ ...prev, [activeScene]: cuts }))
-                      }
-                    />
-                    {sceneCutPlans[activeScene]?.length > 0 && (
-                      <p className="text-[10px] text-muted-foreground mt-1 text-center">
-                        ✅ תוכנית חיתוכים נשמרה — {sceneCutPlans[activeScene].length} חיתוכים
-                      </p>
+                {/* ── Clip strip — all uploaded clips as small thumbnails ── */}
+                {currentVideos.length > 0 && (
+                  <div className="border-t border-border bg-black/20">
+                    {/* AI analysis status bar */}
+                    {isSceneDirecting && (
+                      <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 border-b border-primary/20">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                        <span className="text-xs text-primary font-medium">
+                          {aiAnalyzingClip ? `מנתח: ${aiAnalyzingClip}...` : "מעבד תוצאות..."}
+                        </span>
+                      </div>
                     )}
+
+                    {/* AI plan summary after analysis */}
+                    {sceneAIPlan[activeScene] && !isSceneDirecting && (
+                      <div className="px-4 py-2 bg-primary/5 border-b border-primary/20 flex items-center gap-3 flex-wrap">
+                        <span className="text-xs text-primary font-semibold">🎬 {sceneAIPlan[activeScene].summary}</span>
+                        <div className="flex-1" />
+                        {sceneMergedVideos[activeScene] ? (
+                          <button
+                            onClick={() => setShowMergedVideo(prev => ({ ...prev, [activeScene]: !prev[activeScene] }))}
+                            className="text-xs px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                          >
+                            {showMergedVideo[activeScene] ? "▶ הצג מקורי" : "✅ הצג ממוזג"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => void applySceneAIPlan(sceneAIPlan[activeScene])}
+                            disabled={isSceneDirecting}
+                            className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            ▶ מזג לסצנה אחת
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Clip thumbnails strip */}
+                    <div className="flex gap-3 px-4 py-3 overflow-x-auto">
+                      {currentVideos.map((v, i) => {
+                        const status = clipAnalysisStatus[v.angle];
+                        const planEntry = sceneAIPlan[activeScene]?.selected_clips.find(c => c.angle === v.angle);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => { setActiveAngle(i); setIsPlaying(false); setShowMergedVideo(prev => ({ ...prev, [activeScene]: false })); }}
+                            className={`shrink-0 flex flex-col items-center gap-1 rounded-lg border-2 p-1.5 transition-all ${
+                              i === activeAngle && !showMergedVideo[activeScene]
+                                ? "border-primary bg-primary/10"
+                                : status === "selected" ? "border-green-500/60 bg-green-500/5"
+                                : status === "rejected" ? "border-red-500/40 bg-red-500/5 opacity-50"
+                                : status === "analyzing" ? "border-yellow-400/60 bg-yellow-400/5 animate-pulse"
+                                : "border-border bg-card hover:border-primary/40"
+                            }`}
+                          >
+                            <div className="w-24 h-14 bg-black/40 rounded flex items-center justify-center relative overflow-hidden">
+                              <video
+                                src={v.url}
+                                className="w-full h-full object-cover"
+                                preload="metadata"
+                                muted
+                              />
+                              {status === "analyzing" && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                                  <Loader2 className="h-4 w-4 animate-spin text-yellow-400" />
+                                </div>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-muted-foreground truncate w-24 text-center">{v.angle}</span>
+                            {status === "selected" && planEntry && (
+                              <span className="text-[9px] text-green-400 font-bold">✅ {planEntry.trim_start_sec}s→{planEntry.trim_end_sec ?? "סוף"}</span>
+                            )}
+                            {status === "rejected" && (
+                              <span className="text-[9px] text-red-400">❌ נדחה</span>
+                            )}
+                            {status === "analyzing" && (
+                              <span className="text-[9px] text-yellow-400">⏳ מנתח...</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
-                {/* Trim Editor — controls attach to the main video above, no second player */}
-                {currentVideo && (
+                {/* Trim Editor */}
+                {currentVideo && !showMergedVideo[activeScene] && (
                   <div className="px-4 py-3 border-t border-border">
                     <TrimEditor
                       videoRef={videoRef}
@@ -2474,159 +2525,6 @@ Rules:
           )}
         </div>
 
-        {/* RIGHT — tabbed panel (all stages except scene-list and loading) */}
-        {stage !== "scene-list" && (
-          <div className="w-80 shrink-0 border-l border-border flex flex-col bg-card overflow-hidden">
-            {/* Tab bar */}
-            <div className="flex border-b border-border shrink-0 items-center">
-              <button
-                onClick={() => setShowApiKeyModal(true)}
-                title="הגדר מפתח AI"
-                className="px-2 py-2 text-muted-foreground hover:text-foreground transition-colors shrink-0"
-              >
-                🔑
-              </button>
-              {([ ["ai", "🤖 AI"], ["transitions", "🎞️ מעברים"], ["pacing", "📊 קצב"], ["arc", "📖 עלילה"] ] as const).map(([tab, label]) => (
-                <button
-                  key={tab}
-                  onClick={() => setRightTab(tab)}
-                  className={`flex-1 py-2 text-xs font-semibold transition-colors ${
-                    rightTab === tab
-                      ? "text-primary border-b-2 border-primary bg-primary/5"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Tab content */}
-            <div className="flex-1 overflow-hidden flex flex-col">
-              {rightTab === "ai" && (
-                <>
-                {sceneAIPlan[activeScene] && stage === "editing" && (
-                  <div className="shrink-0 border-b border-border px-3 py-2 space-y-1.5 bg-primary/5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-primary">🎬 תוכנית AI לסצנה {activeScene + 1}</span>
-                      {sceneMergedVideos[activeScene] ? (
-                        <a href={sceneMergedVideos[activeScene]} download={`scene_${activeScene + 1}_merged.mp4`}
-                          className="text-[10px] text-green-400 border border-green-500/30 px-2 py-0.5 rounded hover:bg-green-500/10">
-                          ⬇ הורד
-                        </a>
-                      ) : (
-                        <button onClick={() => void applySceneAIPlan(sceneAIPlan[activeScene])}
-                          disabled={isSceneDirecting}
-                          className="text-[10px] text-primary border border-primary/30 px-2 py-0.5 rounded hover:bg-primary/10 disabled:opacity-50">
-                          {isSceneDirecting ? "ממזג..." : "▶ מזג עכשיו"}
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-1">
-                      {sceneAIPlan[activeScene].selected_clips.map((c, i) => (
-                        <div key={i} className="flex items-center gap-1.5 text-[10px]">
-                          <span className="text-green-400 font-bold w-3">{c.order}.</span>
-                          <span className="text-foreground font-medium truncate flex-1">{c.angle}</span>
-                          <span className="text-muted-foreground shrink-0">{c.trim_start_sec}s→{c.trim_end_sec ?? "סוף"}</span>
-                        </div>
-                      ))}
-                      {sceneAIPlan[activeScene].rejected_clips.length > 0 && (
-                        <div className="text-[10px] text-muted-foreground pt-0.5">
-                          ❌ נדחו: {sceneAIPlan[activeScene].rejected_clips.map(r => r.angle).join(", ")}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                <AIChatPanel
-                  messages={chatMessages}
-                  onSendMessage={handleSendMessage}
-                  onQuickAction={handleQuickAction}
-                  stage={stage}
-                  activeScene={activeScene}
-                  videoCount={currentVideos.length}
-                  onApplyAICut={() => {
-                    setChatMessages(prev => [
-                      ...prev,
-                      { role: "ai", content: `🎬 זיהיתי ${currentVideos.length} זוויות בסצנה ${activeScene + 1}.\n\nאני ממליץ:\n- **פתיחה** עם ${currentVideos[0]?.angle || "זווית 1"} (שוט רחב)\n- **חיתוך ב-00:15** ל${currentVideos[Math.min(1, currentVideos.length - 1)]?.angle || "זווית 2"} כשהשחקן זז\n${currentVideos.length > 2 ? `- **תקריב ב-00:22** ל${currentVideos[2]?.angle} ללכידת רגש\n` : ""}\nהאם להחיל את החיתוך הזה?`,
-                        actions: [
-                          { label: "החל חיתוך", type: "apply" as const, onAction: () => {
-                            setChatMessages(p => [...p, { role: "ai", content: "✅ חיתוך אוטומטי הוחל! הזוויות מסודרות לפי המלצת ה-AI." }]);
-                            approveScene();
-                          }},
-                          { label: "דחה", type: "reject" as const, onAction: () => {
-                            setChatMessages(p => [...p, { role: "ai", content: "בסדר, לא הוחל. תוכל לבחור ידנית מה-Multi-Cam." }]);
-                          }},
-                        ],
-                      },
-                    ]);
-                  }}
-                />
-                </>
-              )}
-
-              {rightTab === "transitions" && (
-                <div className="p-4 overflow-y-auto h-full">
-                  <TransitionsPanel
-                    sceneTransitions={sceneTransitions}
-                    onTransitionChange={(sceneIndex, type) =>
-                      setSceneTransitions(prev => ({ ...prev, [sceneIndex]: type }))
-                    }
-                    sceneCount={scenes.length}
-                    activeScene={activeScene}
-                  />
-                </div>
-              )}
-
-              {rightTab === "pacing" && (
-                <div className="p-4 overflow-y-auto h-full">
-                  <PacingPanel
-                    clips={scenes.map((_, i) => ({
-                      sceneIndex: i,
-                      durationSec: sceneDurations[i] ?? 0,
-                      label: `סצנה ${i + 1}`,
-                    }))}
-                    activeScene={activeScene}
-                    onSceneClick={(i) => {
-                      setActiveScene(i);
-                      setActiveAngle(0);
-                    }}
-                  />
-                </div>
-              )}
-
-              {rightTab === "arc" && (
-                <div className="p-4 overflow-y-auto h-full">
-                  <StoryArcPanel
-                    scenes={scenes.map((_, i) => {
-                      const arc = editPlan?.story_arc;
-                      let act: 1 | 2 | 3 | undefined;
-                      if (arc) {
-                        if (arc.act1_scenes?.includes(i + 1)) act = 1;
-                        else if (arc.act2_scenes?.includes(i + 1)) act = 2;
-                        else if (arc.act3_scenes?.includes(i + 1)) act = 3;
-                      }
-                      const sp = editPlan?.scene_plan?.find(p => p.scene_number === i + 1);
-                      return {
-                        sceneIndex: i,
-                        emotionalIntensity: sp?.quality_score != null ? sp.quality_score * 10 : 50,
-                        label: `סצנה ${i + 1}`,
-                        mood: sp?.highlight_description || sp?.notes || undefined,
-                        act,
-                      };
-                    })}
-                    activeScene={activeScene}
-                    onSceneClick={(i) => {
-                      setActiveScene(i);
-                      setActiveAngle(0);
-                    }}
-                    totalScenes={scenes.length || project.scenes_count}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
