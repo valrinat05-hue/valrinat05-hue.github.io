@@ -1196,7 +1196,7 @@ Return ONLY a JSON object with this structure (no markdown):
       if (!ctx) { clearTimeout(timeout); resolve(null); return; }
       video.muted = true;
       video.playsInline = true;
-      video.preload = "auto";
+      video.preload = "metadata";
       video.crossOrigin = "anonymous";
       video.onloadedmetadata = () => {
         if (timeSec >= video.duration) { finish(null); return; }
@@ -1247,7 +1247,7 @@ Return ONLY a JSON object with this structure (no markdown):
         setAiAnalyzingClip(clip.angle);
         setClipAnalysisStatus(prev => ({ ...prev, [clip.angle]: "analyzing" }));
         try {
-          const sampleTs = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
+          const sampleTs = [1.0, 3.0, 5.0]; // 3 frames only — reduces RAM usage on large files
           const frames = (await Promise.all(sampleTs.map(t => extractFrameBase64(clip.url, t)))).filter(Boolean) as string[];
           if (frames.length >= 2) {
             const content: any[] = [
