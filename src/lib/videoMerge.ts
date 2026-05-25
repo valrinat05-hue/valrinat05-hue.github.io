@@ -67,6 +67,65 @@ export interface SmartMergeInput {
   playbackSpeed?: number;
 }
 
+export interface EDLClip {
+  fileName: string;
+  angle: string;
+  order: number;
+  inPointSec: number;
+  outPointSec: number | null;
+  transition: string;
+  reason: string;
+}
+
+export interface EDL {
+  title: string;
+  sceneIndex: number;
+  exportedAt: string;
+  selected: EDLClip[];
+  rejected: Array<{ fileName: string; angle: string; reason: string }>;
+  notes: string;
+}
+
+export function exportEDLAsJSON(edl: EDL): void {
+  const blob = new Blob([JSON.stringify(edl, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `scene_${edl.sceneIndex + 1}_edit_plan.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function exportEDLAsCMX(edl: EDL): void {
+  const toTC = (sec: number): string => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    const f = Math.floor((sec % 1) * 25);
+    return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}:${String(f).padStart(2,"0")}`;
+  };
+  let rec = 0;
+  const lines = [`TITLE: ${edl.title}`, "FCM: NON-DROP FRAME", ""];
+  edl.selected.forEach((clip, i) => {
+    const inPt = clip.inPointSec;
+    const outPt = clip.outPointSec ?? (inPt + 10);
+    const dur = outPt - inPt;
+    const num = String(i + 1).padStart(3, "0");
+    lines.push(`${num}  ${clip.fileName.replace(/\.[^.]+$/, "").toUpperCase().slice(0, 8)}  V  C  ${toTC(inPt)} ${toTC(outPt)} ${toTC(rec)} ${toTC(rec + dur)}`);
+    lines.push(`* FROM CLIP NAME: ${clip.fileName}`);
+    lines.push(`* REASON: ${clip.reason}`);
+    lines.push("");
+    rec += dur;
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `scene_${edl.sceneIndex + 1}_edit.edl`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function mergeVideos(
   inputs: MergeInput[],
   onProgress?: (percent: number) => void,
@@ -91,9 +150,13 @@ export async function mergeVideos(
 export async function smartMergeVideos(
   inputs: SmartMergeInput[],
   onProgress?: (percent: number) => void,
-  colorAdjustments?: ColorAdjustments
+  colorAdjustments?: ColorAdjustments,
+  proxyMode = true
 ): Promise<string> {
   const colorFilter = colorAdjustments ? colorAdjustmentsToFFmpegFilter(colorAdjustments) : null;
+  // Proxy: scale to 720p for fast preview; the original files stay untouched
+  const proxyFilter = proxyMode ? "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease" : null;
+  const combinedFilter = [colorFilter, proxyFilter].filter(Boolean).join(",") || null;
 
   if (inputs.length === 0) throw new Error("No videos to merge");
 
@@ -183,13 +246,13 @@ export async function smartMergeVideos(
     onProgress?.(80);
   }
 
-  // Bake color grading into the final output if adjustments are non-neutral
+  // Bake color grading + proxy scale into the final output
   let finalFile: string;
-  if (colorFilter) {
+  if (combinedFilter) {
     await ffmpeg.exec([
       "-i", assembledFile,
-      "-vf", colorFilter,
-      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+      "-vf", combinedFilter,
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", proxyMode ? "26" : "23",
       "-c:a", "copy",
       "-movflags", "+faststart",
       "graded.mp4",

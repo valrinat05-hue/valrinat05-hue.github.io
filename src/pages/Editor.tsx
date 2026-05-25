@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { smartMergeVideos, SmartMergeInput } from "@/lib/videoMerge";
+import { smartMergeVideos, SmartMergeInput, exportEDLAsJSON, exportEDLAsCMX, type EDL } from "@/lib/videoMerge";
 import MultiCamView from "@/components/editor/MultiCamView";
 import TrimEditor from "@/components/editor/TrimEditor";
 import { useNavigate, useParams } from "react-router-dom";
@@ -1174,148 +1174,6 @@ Return ONLY a JSON object with this structure (no markdown):
   };
 
 
-  const _applyAIPrompt_unused = async (_prompt: string) => {
-    if (!projectId) return;
-
-    try {
-      const history = chatMessages.slice(-8).map((m) => ({
-        role: m.role === "ai" ? "assistant" as const : "user" as const,
-        content: m.content,
-      }));
-
-      const systemPrompt = `You are a professional film director and editor AI assistant.
-${FILM_EDITING_KNOWLEDGE}
-The user is editing a film project. Current stage: ${stage}. Active scene index: ${activeScene}. Color adjustments: ${JSON.stringify(colorAdjustments)}.
-When giving editing advice, reference specific principles above (Murch's rules, Kuleshov effect, J/L-cuts, etc.). Reply in Hebrew but use the principles in English internally.
-
-Respond with a JSON object (no markdown) containing:
-{
-  "reply": "Hebrew response to user",
-  "summary": "short action label in Hebrew",
-  "operations": []
-}
-
-Operations can be:
-- {"type":"color_grade","brightness":50,"contrast":55,"saturation":45,"temperature":45,"exposure":50}
-- {"type":"color_preset","preset":"סינמטי"}
-- {"type":"trim_scene","scene_number":1,"trim_start_sec":2,"trim_end_sec":10}
-- {"type":"speed_scene","scene_number":1,"playback_speed":1.5}
-- {"type":"reorder_scenes","order":[3,1,2,4]}
-- {"type":"reject_scene","scene_number":2,"reason":"weak footage"}
-- {"type":"set_transition","after_scene":1,"transition":"crossfade","duration_ms":500}
-- {"type":"audio_mix","music_volume":70,"dialog_volume":100}
-- {"type":"tighten_pacing","aggressiveness":"medium"}
-
-Reply in Hebrew. Keep reply concise and helpful. If no edit operation is needed, return empty operations array.`;
-
-      let opsPayload: { reply?: string; summary?: string; operations?: any[] } | null = null;
-      try {
-        const rawText = await callClaude(systemPrompt, [...history, { role: "user", content: prompt }], 1000);
-        opsPayload = parseJsonResponse(rawText);
-      } catch (apiErr: any) {
-        const status = apiErr?.message?.includes("429") ? 429 : 0;
-        if (status === 429) toast.error("יותר מדי בקשות, נסה שוב בעוד רגע");
-        else toast.error("שגיאה בקריאה ל-AI Editor");
-        setChatMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "ai", content: "❌ לא הצלחתי לבצע את הבקשה. נסה שוב." };
-          return next;
-        });
-        return;
-      }
-
-      const operations = (opsPayload?.operations || []) as import("@/lib/aiEditOps").EditOperation[];
-      const reply: string = opsPayload?.reply || "בוצע.";
-      const summary: string = opsPayload?.summary || "עריכה";
-
-      // Snapshot for undo
-      const prevColor = { ...colorAdjustments };
-      const prevEditPlan = editPlan ? JSON.parse(JSON.stringify(editPlan)) : null;
-
-      const { applyEditOperations } = await import("@/lib/aiEditOps");
-      const result = applyEditOperations(operations, colorAdjustments, project?.scenes_count || scenes.length || 1);
-
-      // 1. Apply color
-      if (result.color) handleAdjustmentsChange(result.color);
-
-      // 2. Merge scene_plan updates into editPlan + persist
-      let nextPlan: EditPlan | null = editPlan;
-      if (result.scenePlanUpdates.length > 0 || result.rejectedScenes.length > 0 || result.reorder) {
-        const existingPlan: EditPlan = editPlan ?? {
-          summary: "",
-          mood: "",
-          pacing: "medium",
-          scene_plan: [],
-          cut_points: [],
-          overall_notes: "",
-        };
-        const planMap = new Map<number, any>();
-        existingPlan.scene_plan.forEach((p) => planMap.set(p.scene_number, p));
-        result.scenePlanUpdates.forEach((u) => {
-          const existing = planMap.get(u.scene_number) || { scene_number: u.scene_number, selected_angle: null, reason: "AI", transition: "cut", notes: "" };
-          planMap.set(u.scene_number, { ...existing, ...u });
-        });
-        // Remove rejected
-        result.rejectedScenes.forEach((s) => planMap.delete(s));
-        let scene_plan = Array.from(planMap.values()).sort((a, b) => a.scene_number - b.scene_number);
-        // Reorder if present
-        if (result.reorder) {
-          const ordered: any[] = [];
-          result.reorder.forEach((sn) => {
-            const found = scene_plan.find((p) => p.scene_number === sn);
-            if (found) ordered.push(found);
-          });
-          if (ordered.length === scene_plan.length) scene_plan = ordered;
-        }
-        nextPlan = { ...existingPlan, summary: summary || existingPlan.summary, scene_plan } as EditPlan;
-        setEditPlan(nextPlan);
-        if (projectId) db.projects.update(projectId, { edit_instructions: nextPlan });
-      }
-
-      // 3. Audio mix → adjust merged video volume immediately if playing
-      if (result.audio && mergedVideoRef.current && typeof result.audio.music_volume === "number") {
-        mergedVideoRef.current.volume = Math.max(0, Math.min(1, result.audio.music_volume / 100));
-      }
-
-      // 4. Speed for active scene preview
-      const speedOp = operations.find((o) => o.type === "speed_scene" && o.scene_number === activeScene + 1);
-      if (speedOp && speedOp.type === "speed_scene" && videoRef.current) {
-        videoRef.current.playbackRate = Math.max(0.5, Math.min(2, speedOp.playback_speed));
-      }
-
-      const labelsBlock = result.humanLabels.length > 0 ? `\n\n${result.humanLabels.map((l) => `- ${l}`).join("\n")}` : "";
-      const aiContent = `${reply}${labelsBlock}`;
-
-      const undo = async () => {
-        handleAdjustmentsChange(prevColor);
-        setEditPlan(prevEditPlan);
-        if (projectId) db.projects.update(projectId, { edit_instructions: prevEditPlan });
-        if (videoRef.current) videoRef.current.playbackRate = 1;
-        setChatMessages((prev) => [...prev, { role: "ai", content: "↩️ העריכה בוטלה — חזרנו למצב הקודם." }]);
-      };
-
-      setChatMessages((prev) => {
-        const next = [...prev];
-        next[next.length - 1] = {
-          role: "ai",
-          content: aiContent,
-          actions: operations.length > 0 ? [{ label: "ביטול", type: "reject", onAction: undo }] : undefined,
-        };
-        return next;
-      });
-
-      if (operations.length > 0) toast.success(summary || "העריכה הוחלה");
-    } catch (e: any) {
-      console.error("applyAIPrompt error:", e);
-      toast.error(e?.message || "שגיאה בעריכה");
-      setChatMessages((prev) => {
-        const next = [...prev];
-        next[next.length - 1] = { role: "ai", content: "❌ שגיאה בעריכה. נסה שוב." };
-        return next;
-      });
-    }
-  };
-
 
   const loadClipDuration = (url: string): Promise<number> =>
     new Promise((resolve) => {
@@ -1489,19 +1347,52 @@ Rules:
 
     if (inputs.length === 0) { toast.error("לא נמצאו קליפים למיזוג"); return; }
 
-    const toastId = toast.loading(`ממזג ${inputs.length} קליפים לסצנה אחת...`);
+    const toastId = toast.loading(`ממזג ${inputs.length} קליפים (720p תצוגה מקדימה)...`);
     setIsSceneDirecting(true);
     try {
-      const url = await smartMergeVideos(inputs, () => {}, colorAdjustments);
+      // proxyMode=true: scales output to 720p for fast browser preview
+      const url = await smartMergeVideos(inputs, () => {}, colorAdjustments, true);
       setSceneMergedVideos(prev => ({ ...prev, [activeScene]: url }));
       setShowMergedVideo(prev => ({ ...prev, [activeScene]: true }));
-      toast.success("✅ הסצנה הממוזגת מוכנה!", { id: toastId });
-      setChatMessages(prev => [...prev, { role: "ai", content: `✅ **הסצנה ${activeScene + 1} מוכנה!**\n\nממוזגה מ-${inputs.length} קליפים.\nאשרי ושמרי כשאת מרוצה.` }]);
+      toast.success("✅ תצוגה מקדימה מוכנה (720p). לייצוא ב-4K — לחצי על ⬇ EDL", { id: toastId });
     } catch (err: any) {
       toast.error("שגיאה במיזוג: " + err.message, { id: toastId });
     } finally {
       setIsSceneDirecting(false);
     }
+  };
+
+  const exportSceneEDL = (format: "json" | "cmx") => {
+    const plan = sceneAIPlan[activeScene];
+    const clips = sceneVideos[activeScene] || [];
+    if (!plan) { toast.error("הרץ AI במאי קודם"); return; }
+    const edl: EDL = {
+      title: `Scene ${activeScene + 1} — ${project?.name || ""}`,
+      sceneIndex: activeScene,
+      exportedAt: new Date().toISOString(),
+      selected: plan.selected_clips.map(sp => {
+        const clip = clips.find(c => c.angle === sp.angle);
+        const sceneId = scenes[activeScene]?.id;
+        const dbRow = sceneId ? db.sceneVideos.getByScene(sceneId).find(r => r.id === clip?.id) : null;
+        return {
+          fileName: dbRow?.file_name ?? sp.angle,
+          angle: sp.angle,
+          order: sp.order,
+          inPointSec: sp.trim_start_sec,
+          outPointSec: sp.trim_end_sec ?? null,
+          transition: sp.transition ?? "cut",
+          reason: sp.reason,
+        };
+      }),
+      rejected: plan.rejected_clips.map(r => {
+        const clip = clips.find(c => c.angle === r.angle);
+        return { fileName: clip ? (clip.angle) : r.angle, angle: r.angle, reason: r.reason };
+      }),
+      notes: plan.director_note ?? "",
+    };
+    if (format === "json") exportEDLAsJSON(edl);
+    else exportEDLAsCMX(edl);
+    toast.success(format === "json" ? "✅ JSON הורד" : "✅ EDL הורד — ייבאי ל-DaVinci/Premiere");
   };
 
   const isSceneApproved = approvedScenes.has(activeScene);
@@ -2074,22 +1965,38 @@ Rules:
                       <div className="px-4 py-2 bg-primary/5 border-b border-primary/20 flex items-center gap-3 flex-wrap">
                         <span className="text-xs text-primary font-semibold">🎬 {sceneAIPlan[activeScene].summary}</span>
                         <div className="flex-1" />
-                        {sceneMergedVideos[activeScene] ? (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {sceneMergedVideos[activeScene] ? (
+                            <button
+                              onClick={() => setShowMergedVideo(prev => ({ ...prev, [activeScene]: !prev[activeScene] }))}
+                              className="text-xs px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                            >
+                              {showMergedVideo[activeScene] ? "▶ הצג מקורי" : "✅ הצג ממוזג (720p)"}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => void applySceneAIPlan(sceneAIPlan[activeScene])}
+                              disabled={isSceneDirecting}
+                              className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            >
+                              ▶ מזג (720p תצוגה מקדימה)
+                            </button>
+                          )}
                           <button
-                            onClick={() => setShowMergedVideo(prev => ({ ...prev, [activeScene]: !prev[activeScene] }))}
-                            className="text-xs px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                            onClick={() => exportSceneEDL("cmx")}
+                            className="text-xs px-3 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                            title="ייצוא EDL לDaVinci Resolve / Premiere Pro"
                           >
-                            {showMergedVideo[activeScene] ? "▶ הצג מקורי" : "✅ הצג ממוזג"}
+                            ⬇ EDL
                           </button>
-                        ) : (
                           <button
-                            onClick={() => void applySceneAIPlan(sceneAIPlan[activeScene])}
-                            disabled={isSceneDirecting}
-                            className="text-xs px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                            onClick={() => exportSceneEDL("json")}
+                            className="text-xs px-3 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                            title="ייצוא תוכנית עריכה כ-JSON"
                           >
-                            ▶ מזג לסצנה אחת
+                            ⬇ JSON
                           </button>
-                        )}
+                        </div>
                       </div>
                     )}
 
