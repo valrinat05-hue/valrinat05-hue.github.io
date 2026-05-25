@@ -1424,21 +1424,42 @@ Rules:
       {showApiKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="bg-card border rounded-xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-lg font-bold mb-1">מפתח Anthropic API</h2>
-            <p className="text-sm text-muted-foreground mb-4">נדרש להפעלת AI במאי. המפתח נשמר בדפדפן בלבד.</p>
+            <h2 className="text-lg font-bold mb-1">🔑 מפתח Anthropic API</h2>
+            <p className="text-sm text-muted-foreground mb-3">נדרש להפעלת AI במאי. נשמר בדפדפן בלבד.</p>
             <input
-              type="password"
+              type="text"
               placeholder="sk-ant-api03-..."
               value={apiKeyInput}
               onChange={e => setApiKeyInput(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm bg-background mb-4 font-mono"
+              className="w-full border rounded-lg px-3 py-2 text-sm bg-background mb-2 font-mono"
+              autoComplete="off"
+              spellCheck={false}
             />
-            <div className="flex gap-2 justify-end">
+            <p className="text-xs text-muted-foreground mb-4">
+              {apiKeyInput.trim().startsWith("sk-ant-") ? "✅ פורמט תקין" : apiKeyInput.trim() ? "⚠️ המפתח צריך להתחיל ב-sk-ant-" : ""}
+            </p>
+            <div className="flex gap-2 justify-end flex-wrap">
               <Button variant="ghost" onClick={() => setShowApiKeyModal(false)}>ביטול</Button>
+              <Button variant="outline" onClick={async () => {
+                const key = apiKeyInput.trim();
+                if (!key) { toast.error("הזיני מפתח קודם"); return; }
+                toast.loading("בודק מפתח...", { id: "test-key" });
+                try {
+                  const res = await fetch("https://api.anthropic.com/v1/messages", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+                    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+                  });
+                  if (res.ok) toast.success("✅ מפתח תקין!", { id: "test-key" });
+                  else { const d = await res.json(); toast.error("❌ " + (d?.error?.message || "מפתח לא תקין"), { id: "test-key" }); }
+                } catch { toast.error("שגיאת רשת", { id: "test-key" }); }
+              }}>בדוק</Button>
               <Button onClick={() => {
-                localStorage.setItem("anthropic_api_key", apiKeyInput.trim());
+                const key = apiKeyInput.trim();
+                if (!key.startsWith("sk-ant-")) { toast.error("מפתח לא תקין — צריך להתחיל ב-sk-ant-"); return; }
+                localStorage.setItem("anthropic_api_key", key);
                 setShowApiKeyModal(false);
-                toast.success("מפתח נשמר!");
+                toast.success("✅ מפתח נשמר!");
               }}>שמור</Button>
             </div>
           </div>
