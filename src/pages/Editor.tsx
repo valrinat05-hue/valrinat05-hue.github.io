@@ -1347,10 +1347,28 @@ Rules:
 
     if (inputs.length === 0) { toast.error("לא נמצאו קליפים למיזוג"); return; }
 
+    // Check total file size — RAW cinema files can be tens of GB, which crashes the browser
+    const MAX_MERGE_BYTES = 600 * 1024 * 1024; // 600 MB total
+    let totalSize = 0;
+    for (const inp of inputs) {
+      try {
+        const head = await fetch(inp.url, { method: "HEAD" }).catch(() => null);
+        const len = head ? parseInt(head.headers.get("content-length") || "0") : 0;
+        totalSize += len;
+      } catch { /* can't determine size — proceed anyway */ }
+    }
+
+    if (totalSize > MAX_MERGE_BYTES) {
+      toast.info(
+        `הקבצים גדולים מדי לעיבוד בדפדפן (${(totalSize / 1024 / 1024 / 1024).toFixed(1)} GB).\nהשתמשי ב-⬇ EDL לרנדור הסופי ב-DaVinci Resolve.`,
+        { duration: 8000 }
+      );
+      return;
+    }
+
     const toastId = toast.loading(`ממזג ${inputs.length} קליפים (720p תצוגה מקדימה)...`);
     setIsSceneDirecting(true);
     try {
-      // proxyMode=true: scales output to 720p for fast browser preview
       const url = await smartMergeVideos(inputs, () => {}, colorAdjustments, true);
       setSceneMergedVideos(prev => ({ ...prev, [activeScene]: url }));
       setShowMergedVideo(prev => ({ ...prev, [activeScene]: true }));
