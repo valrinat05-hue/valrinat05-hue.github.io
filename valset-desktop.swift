@@ -2,8 +2,18 @@ import Cocoa
 import WebKit
 
 let PROJECT_DIR = NSHomeDirectory() + "/Desktop/\u{05D5}\u{05DC}\u{05DF}/cinematic-script-suite-main"
-// Set VITE_ANTHROPIC_API_KEY in the project .env file — the web app reads it at runtime
-let ANTHROPIC_KEY = ProcessInfo.processInfo.environment["VITE_ANTHROPIC_API_KEY"] ?? ""
+// Key is read from PROJECT_DIR/.env at launch — no hardcoded secret needed
+let ANTHROPIC_KEY: String = {
+    let envPath = PROJECT_DIR + "/.env"
+    let contents = (try? String(contentsOfFile: envPath, encoding: .utf8)) ?? ""
+    for line in contents.components(separatedBy: .newlines) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("VITE_ANTHROPIC_API_KEY=") {
+            return String(trimmed.dropFirst("VITE_ANTHROPIC_API_KEY=".count))
+        }
+    }
+    return ""
+}()
 let APP_URL = "http://localhost:5173"
 
 // Polyfill: bridge showOpenFilePicker / showDirectoryPicker → Swift NSOpenPanel
